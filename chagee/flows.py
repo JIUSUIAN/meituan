@@ -24,7 +24,7 @@ from .config import Config
 from .errors import (AUTH_EXPIRED_CODES, ApiError, ApiTransportError,
                     classify_grant_error)
 from .models import Coupon, GrantEvent
-from .notify import mask_label
+from .notify import account_mails, mask_label
 from .pacing import GrantPacing
 from .security import GLOBAL_SECRETS
 
@@ -228,8 +228,9 @@ def single_run(auths, config=None, run_log=None, notifier=None):
             any_error = True
     if notifier is not None:
         notifier.notify_report("result", report)
-        for label, items in report.items():
-            notifier.notify_account(label, items)
+        for auth in auths:
+            notifier.notify_account(auth["label"], report.get(auth["label"], []),
+                                    to_mails=account_mails(auth))
     return report, any_error
 
 
@@ -581,6 +582,13 @@ class LoopRunner:
         except OSError as e:
             self.logger.log("事件明细写入失败: %s" % e)
 
+    def _account_mails(self, label):
+        """该账号在凭据条目里自带的通知邮箱（notify_mail），没有则用全局配置。"""
+        for auth in self.auths:
+            if auth["label"] == label:
+                return account_mails(auth)
+        return None
+
     def _notify(self, report, wave_count):
         """把结果推给通知通道——旁路行为，任何失败都不影响报告返回。"""
         if self.notifier is None:
@@ -596,7 +604,8 @@ class LoopRunner:
         for label, items in (report or {}).items():
             timings = {name: value for (who, name), value
                        in last_try.items() if who == label}
-            self.notifier.notify_account(label, items, timings=timings)
+            self.notifier.notify_account(label, items, timings=timings,
+                                         to_mails=self._account_mails(label))
         expired = sorted({mask_label(label)
                           for label, items in (report or {}).items()
                           for item in items or []

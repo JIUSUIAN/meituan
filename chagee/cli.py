@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .config import DIR, Config, load_config
 from .flows import beijing_ts, loop_run, ping, single_run, verify_session
-from .notify import Notifier
+from .notify import Notifier, account_mails, register_config_secrets
 from .security import load_auths
 
 # 开火时刻：HH:MM[:SS[.毫秒]]，秒可省略
@@ -79,6 +79,19 @@ def _filter_accounts(auths, spec, ap):
     return kept
 
 
+def _collect_test_mails(cfg):
+    """测试消息的收件人：全局配置 + 各账号凭据条目里写的 notify_mail。"""
+    mails = list(cfg.temp_email_to_mails or ()) + list(cfg.email_to or ())
+    try:
+        for auth in load_auths(cfg.auth_files, base_dir=DIR):
+            for mail in (account_mails(auth) or ()):
+                if mail not in mails:
+                    mails.append(mail)
+    except Exception:
+        pass          # 没有凭据文件时也能测全局收件人
+    return tuple(mails)
+
+
 def _notify_test(cfg, ap):
     """按配置的通道发一条测试消息——验证 token/webhook/自建邮箱是否真能送达。"""
     notifier = Notifier.from_config(cfg)
@@ -86,13 +99,14 @@ def _notify_test(cfg, ap):
         notifier.close()
         ap.error("没有可用通知通道（notify_targets 为空，或 notify_enabled=false/"
                  "--no-notify）")
+    to_mails = _collect_test_mails(cfg) or None
     try:
         if "temp_email" in notifier.targets and cfg.temp_email_api_url:
             ok, detail = notifier.probe_service()
             print("health_check: %s %s" % ("OK" if ok else "失败", detail),
                   file=sys.stderr)
         results = notifier.notify("test", "这是一条 chagee 通知测试消息。",
-                                 force=True)
+                                 force=True, to_mails=to_mails)
     finally:
         notifier.close()
     print(json.dumps({ch: {"ok": ok, "detail": msg}
@@ -141,6 +155,9 @@ def main(argv=None):
         "fire_lead": args.fire_lead,
         "notify_enabled": args.notify,
     })
+
+    # 通知凭据（管理密码/token/webhook）立刻登记脱敏：后面的报错也可能带出配置值
+    register_config_secrets(cfg)
 
     # 配置层校验先于凭据加载：配置写错时不该先去读 cookies 文件
     if args.loop and not cfg.snipe_coupons:

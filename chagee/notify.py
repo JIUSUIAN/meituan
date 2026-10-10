@@ -52,6 +52,9 @@ SUCCESS_RULES = {
     "temp_email": ("status", ("ok",)),
 }
 
+# 可由单次调用覆盖收件人的通道：字段 -> 覆盖入口
+RECIPIENT_FIELDS = {"email": "email_to", "temp_email": "temp_email_to_mails"}
+
 EVENT_TITLES = {
     "result": "CHAGEE 抢券结果",
     "account_result": "CHAGEE 账号领取详情",
@@ -76,6 +79,35 @@ def mask_label(label):
     return re.sub(r"\d{4,}",
                   lambda m: m.group()[:3] + "****" + m.group()[-2:],
                   str(label))
+
+
+def register_config_secrets(cfg, secrets=None):
+    """把配置里的通知凭据登记进脱敏表。
+
+    Notifier 构造时会调用，但 CLI 在 load_config 之后就该立刻调用一次——
+    否则「构造 Notifier 之前」报出的配置错误可能把管理密码原样打出来。"""
+    registry = secrets if secrets is not None else GLOBAL_SECRETS
+    for key in _SECRET_FIELDS:
+        registry.register(getattr(cfg, key, None))
+    # webhook URL 里的 token 常以 query 参数出现，把参数值也登记
+    for key in ("feishu_webhook", "dingtalk_webhook", "notify_webhook_url"):
+        url = getattr(cfg, key, None) or ""
+        for values in urllib.parse.parse_qs(
+                urllib.parse.urlsplit(url).query).values():
+            for item in values:
+                registry.register(item)
+
+
+def account_mails(auth):
+    """认证条目里自带的通知邮箱（`notify_mail`，字符串或列表），没有则 None。
+
+    收件邮箱放凭据文件而不是配置文件：一个账号一份收件箱，且天然不进版本库。"""
+    value = auth.get("notify_mail") or auth.get("notify_mailbox")
+    if not value:
+        return None
+    if isinstance(value, str):
+        return (value,)
+    return tuple(v for v in value if v)
 
 
 def dingtalk_signed_url(webhook, secret, timestamp=None):
@@ -129,15 +161,7 @@ class Notifier:
                    log=log, smtp_factory=smtp_factory)
 
     def _register_secrets(self):
-        for key in _SECRET_FIELDS:
-            self.secrets.register(getattr(self.cfg, key, None))
-        # webhook URL 里的 token 常以 query 参数出现，把参数值也登记
-        for key in ("feishu_webhook", "dingtalk_webhook", "notify_webhook_url"):
-            url = getattr(self.cfg, key, None) or ""
-            for _, v in urllib.parse.parse_qs(
-                    urllib.parse.urlsplit(url).query).items():
-                for item in v:
-                    self.secrets.register(item)
+        register_config_secrets(self.cfg, self.secrets)
 
     def close(self):
         if self._owns_session:
@@ -161,10 +185,11 @@ class Notifier:
 
     # -- 对外入口 ---------------------------------------------------------
 
-    def notify(self, event, text, title=None, force=False):
+    def notify(self, event, text, title=None, force=False, to_mails=None):
         """发送一个事件，返回 [(channel, ok, detail)]；本身永不抛异常。
 
-        force=True 时忽略 notify_events 过滤（--notify-test 用）。"""
+        force=True 时忽略 notify_events 过滤（--notify-test 用）。
+        to_mails 给定时覆盖邮件类通道的收件人（每账号自带收件邮箱的用法）。"""
         if not self.enabled:
             return []
         if not force and event not in tuple(self.cfg.notify_events):
@@ -172,13 +197,15 @@ class Notifier:
         title = title or EVENT_TITLES.get(event, "CHAGEE 通知")
         results = []
         for channel in self.targets:
-            missing = [k for k in REQUIRED[channel]
-                       if not getattr(self.cfg, k, None)]
+            # 收件人可由本次调用覆盖，覆盖时不再要求全局配置里有它
+            fields = [f for f in REQUIRED[channel]
+                      if not (to_mails and f == RECIPIENT_FIELDS.get(channel))]
+            missing = [f for f in fields if not getattr(self.cfg, f, None)]
             if missing:
                 results.append((channel, False, "缺少配置: " + ", ".join(missing)))
                 continue
             try:
-                self._send(channel, event, title, text)
+                self._send(channel, event, title, text, to_mails=to_mails)
                 results.append((channel, True, "已发送"))
             except Exception as e:                 # best-effort：异常不外泄
                 results.append((channel, False,
@@ -205,8 +232,11 @@ class Notifier:
             body = "状态分布 %s\n%s" % (statuses, body)
         return self.notify(event, body)
 
-    def notify_account(self, label, items, timings=None, extra_lines=()):
-        """单账号一条消息：每张券一行，可带发送时刻/耗时/服务端最终状态。"""
+    def notify_account(self, label, items, timings=None, extra_lines=(),
+                       to_mails=None):
+        """单账号一条消息：每张券一行，可带发送时刻/耗时/服务端最终状态。
+
+        to_mails 给定时只发给这些收件人（该账号在凭据文件里自带的 notify_mail）。"""
         who = (mask_label(label) if self.cfg.notify_mask_labels
                else str(label))
         lines = []
@@ -227,11 +257,11 @@ class Notifier:
         if not lines:
             lines.append("无结果")
         body = "\n".join([who] + lines + list(extra_lines))
-        return self.notify("account_result", body)
+        return self.notify("account_result", body, to_mails=to_mails)
 
     # -- 各通道实现 -------------------------------------------------------
 
-    def _send(self, channel, event, title, text):
+    def _send(self, channel, event, title, text, to_mails=None):
         cfg = self.cfg
         body = "%s\n%s" % (title, text)
         if channel == "telegram":
@@ -253,9 +283,9 @@ class Notifier:
                        % cfg.serverchan_send_key, channel,
                        data={"title": title, "desp": text})
         elif channel == "email":
-            self._send_email(title, text)
+            self._send_email(title, text, to_mails=to_mails)
         elif channel == "temp_email":
-            self._send_temp_email(title, text)
+            self._send_temp_email(title, text, to_mails=to_mails)
         elif channel == "webhook":
             self._post(cfg.notify_webhook_url, None,
                        json={"event": event, "title": title, "text": text})
@@ -294,15 +324,18 @@ class Notifier:
         cls = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
         return cls(host, port, timeout=self.cfg.notify_timeout)
 
-    def _send_email(self, title, text):
+    def _send_email(self, title, text, to_mails=None):
         cfg = self.cfg
         host, port = _split_smtp(cfg.email_smtp_host)
         port = port or cfg.email_smtp_port
         if not host:
             raise RuntimeError("缺少 SMTP 主机配置")
+        recipients = tuple(to_mails or ()) or tuple(cfg.email_to or ())
+        if not recipients:
+            raise RuntimeError("缺少收件邮箱（email_to 或本次覆盖的 to_mails）")
         message = EmailMessage()
         message["From"] = cfg.email_from or cfg.email_user or "chagee@localhost"
-        message["To"] = ", ".join(cfg.email_to)
+        message["To"] = ", ".join(recipients)
         message["Subject"] = "%s%s" % (cfg.email_subject_prefix, title)
         message.set_content(text)
         server = self._open_smtp(host, port, cfg.email_use_ssl)
@@ -343,13 +376,14 @@ class Notifier:
                     {"Authorization": "Bearer " + cfg.temp_email_jwt}, body)
         raise RuntimeError("需要 temp_email_admin_auth 或 temp_email_jwt")
 
-    def _send_temp_email(self, title, text):
+    def _send_temp_email(self, title, text, to_mails=None):
         """通过自建 cloudflare_temp_email 服务发信；多个收件人就逐个发。"""
-        to_mails = tuple(self.cfg.temp_email_to_mails or ())
-        if not to_mails:
-            raise RuntimeError("缺少 temp_email_to_mails")
+        recipients = (tuple(to_mails or ())
+                      or tuple(self.cfg.temp_email_to_mails or ()))
+        if not recipients:
+            raise RuntimeError("缺少 temp_email_to_mails（且该账号没写 notify_mail）")
         url, headers, base_body = self._temp_email_target()
-        for to in to_mails:
+        for to in recipients:
             body = dict(base_body)
             body.update({"to_mail": to, "subject": title, "content": text})
             self._post(url, "temp_email", json=body, headers=headers)

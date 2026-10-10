@@ -1,6 +1,8 @@
 # 凭据文件绝不入库；若曾提交过，视为已泄露并重新获取
 cookies.json
 cookies-new.json
+# 本地配置可能含通知 token / 管理密码，同样不入库（示例文件 claim.config.example.json 才入库）
+claim.config.json
 *.log
 *.jsonl
 .env
