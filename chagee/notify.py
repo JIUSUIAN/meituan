@@ -106,6 +106,37 @@ def account_mails(auth):
     return tuple(v for v in value if v)
 
 
+def account_routing(auth, warn=None):
+    """账号条目的通知路由，返回 (targets, to_mails)，缺省项为 None=沿用全局。
+
+    两种写法：
+
+        "notify": {"targets": ["email"], "to": ["a@x.com"]}   完整形式
+        "notify_mail": "a@x.com"                               只换收件人的简写
+
+    通道凭据仍留在全局配置里，账号条目只决定「这个账号的详情走哪条通道、
+    发给谁」。spec 写错时通过 warn 回调报一行并回落全局路由——通知配置错误
+    不该拖垮抢券。"""
+    spec = auth.get("notify")
+    if spec is None:
+        return None, account_mails(auth)
+    if not isinstance(spec, dict):
+        if warn:
+            warn("账号 %s 的 notify 应为对象（targets / to），已改用全局通道"
+                 % auth.get("label"))
+        return None, None
+    targets = (spec.get("targets") or spec.get("channels")
+               or spec.get("channel"))
+    if isinstance(targets, str):
+        targets = [targets]
+    to = (spec.get("to") or spec.get("to_mail") or spec.get("to_mails")
+          or account_mails(auth))
+    if isinstance(to, str):
+        to = [to]
+    return (tuple(targets) if targets else None,
+            tuple(v for v in (to or ()) if v) or None)
+
+
 def dingtalk_signed_url(webhook, secret, timestamp=None):
     """钉钉自定义机器人「加签」：timestamp + HMAC-SHA256 拼进 query。"""
     ts = str(int(round((timestamp if timestamp is not None else time.time())
@@ -181,18 +212,30 @@ class Notifier:
 
     # -- 对外入口 ---------------------------------------------------------
 
-    def notify(self, event, text, title=None, force=False, to_mails=None):
+    def notify(self, event, text, title=None, force=False, to_mails=None,
+               targets=None):
         """发送一个事件，返回 [(channel, ok, detail)]；本身永不抛异常。
 
         force=True 时忽略 notify_events 过滤（--notify-test 用）。
-        to_mails 给定时覆盖邮件类通道的收件人（每账号自带收件邮箱的用法）。"""
-        if not self.enabled:
+        targets/to_mails 来自账号条目的路由：只发这些通道、只发这些收件人；
+        targets 给定时不要求全局 notify_targets 非空（凭据仍取全局配置）。"""
+        if not self.cfg.notify_enabled:
             return []
+        if targets is None and not self.targets:
+            return []          # 全局没配通道：汇总/健康类事件没有去处
         if not force and event not in tuple(self.cfg.notify_events):
             return []
         title = title or EVENT_TITLES.get(event, "CHAGEE 通知")
+        if targets is not None:
+            unknown = [t for t in targets if t not in CHANNELS]
+            if unknown:
+                self.log("通知[%s] 账号指定了无法识别的通道，已忽略: %s"
+                         % (event, ", ".join(unknown)))
+            channels = tuple(t for t in targets if t in CHANNELS)
+        else:
+            channels = tuple(self.targets)
         results = []
-        for channel in self.targets:
+        for channel in channels:
             # 收件人可由本次调用覆盖，覆盖时不再要求全局配置里有它
             fields = [f for f in REQUIRED[channel]
                       if not (to_mails and f == RECIPIENT_FIELDS.get(channel))]
@@ -229,10 +272,10 @@ class Notifier:
         return self.notify(event, body)
 
     def notify_account(self, label, items, timings=None, extra_lines=(),
-                       to_mails=None):
+                       to_mails=None, targets=None):
         """单账号一条消息：每张券一行，可带发送时刻/耗时/服务端最终状态。
 
-        to_mails 给定时只发给这些收件人（该账号在凭据文件里自带的 notify_mail）。"""
+        targets/to_mails 给定时按该账号自己的路由发送（账号条目里的 notify）。"""
         who = (mask_label(label) if self.cfg.notify_mask_labels
                else str(label))
         lines = []
@@ -253,7 +296,8 @@ class Notifier:
         if not lines:
             lines.append("无结果")
         body = "\n".join([who] + lines + list(extra_lines))
-        return self.notify("account_result", body, to_mails=to_mails)
+        return self.notify("account_result", body, to_mails=to_mails,
+                           targets=targets)
 
     # -- 各通道实现 -------------------------------------------------------
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .config import DIR, Config, load_config
 from .flows import beijing_ts, loop_run, ping, single_run, verify_session
-from .notify import Notifier, account_mails, register_config_secrets
+from .notify import Notifier, account_routing, register_config_secrets
 from .security import load_auths
 
 # 开火时刻：HH:MM[:SS[.毫秒]]，秒可省略
@@ -79,36 +79,47 @@ def _filter_accounts(auths, spec, ap):
     return kept
 
 
-def _collect_test_mails(cfg):
-    """测试消息的收件人：全局 email_to + 各账号凭据条目里写的 notify_mail。"""
-    mails = list(cfg.email_to or ())
+def _load_accounts_for_test(cfg):
+    """尽力加载账号（用于逐通道自检）；没有凭据文件时返回空列表。"""
     try:
-        for auth in load_auths(cfg.auth_files, base_dir=DIR):
-            for mail in (account_mails(auth) or ()):
-                if mail not in mails:
-                    mails.append(mail)
+        return load_auths(cfg.auth_files, base_dir=DIR)
     except Exception:
-        pass          # 没有凭据文件时也能测全局收件人
-    return tuple(mails)
+        return []
+
+
+def _fmt_results(results):
+    return {ch: {"ok": ok, "detail": msg} for ch, ok, msg in results}
 
 
 def _notify_test(cfg, ap):
-    """按配置的通道发一条测试消息——验证 token/webhook/SMTP 是否真能送达。"""
+    """发测试消息验证通道真能送达：全局通道一条，带路由的账号各一条。
+
+    账号条目里的 notify / notify_mail 决定「这个账号的详情走哪条通道、发给谁」，
+    自检就按同样的路由各发一条，配置对不对一眼看得出来。"""
     notifier = Notifier.from_config(cfg)
-    if not notifier.enabled:
-        notifier.close()
-        ap.error("没有可用通知通道（notify_targets 为空，或 notify_enabled=false/"
-                 "--no-notify）")
-    to_mails = _collect_test_mails(cfg) or None
+    accounts = _load_accounts_for_test(cfg)
+    warn = lambda msg: print(msg, file=sys.stderr)          # noqa: E731
+    out = {}
     try:
-        results = notifier.notify("test", "这是一条 chagee 通知测试消息。",
-                                 force=True, to_mails=to_mails)
+        if notifier.enabled:
+            out["__global__"] = notifier.notify(
+                "test", "这是一条 chagee 通知测试消息（全局通道）。",
+                force=True, to_mails=tuple(cfg.email_to or ()) or None)
+        for auth in accounts:
+            targets, to_mails = account_routing(auth, warn=warn)
+            if not (targets or to_mails):
+                continue
+            out[auth["label"]] = notifier.notify(
+                "test", "这是一条 chagee 账号路由测试消息。",
+                force=True, to_mails=to_mails, targets=targets)
+        if not out:
+            ap.error("没有可发的测试：notify_targets 为空，且账号条目没写 "
+                     "notify / notify_mail（可用 --notify-test 前先配好通道）")
     finally:
         notifier.close()
-    print(json.dumps({ch: {"ok": ok, "detail": msg}
-                      for ch, ok, msg in results},
-                     ensure_ascii=False, indent=2))
-    return 0 if results and all(ok for _, ok, _ in results) else 1
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    flat = [ok for results in out.values() for _, ok, _ in results]
+    return 0 if flat and all(flat) else 1
 
 
 def main(argv=None):

@@ -10,8 +10,8 @@
   models.py     领域模型：Coupon / GrantEvent
   api_client.py 签名、请求、错误转换、JSESSIONID 轮换跟随（单账号客户端）
   pacing.py     限速器 + 可动态调容量的在飞闸门
-  notify.py     消息通知：Telegram / 飞书 / 钉钉 / Server酱 / 邮件 / 通用 webhook
+  notify.py     消息通知：6 类通道 + 账号级路由（notify / notify_mail）
   flows.py      业务流程：ping / verify_session / single_run / LoopRunner
 """
 
-__version__ = "1.15.0"
+__version__ = "1.16.0"

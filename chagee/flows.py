@@ -24,7 +24,7 @@ from .config import Config
 from .errors import (AUTH_EXPIRED_CODES, ApiError, ApiTransportError,
                     classify_grant_error)
 from .models import Coupon, GrantEvent
-from .notify import account_mails, mask_label
+from .notify import account_routing, mask_label
 from .pacing import GrantPacing
 from .security import GLOBAL_SECRETS
 
@@ -217,6 +217,7 @@ def try_grant(client, brand_id, coupon, pacing=None, config=None):
 def single_run(auths, config=None, run_log=None, notifier=None):
     """单次执行：每个账号尝试一次，返回 (报告, 是否有错误)。"""
     cfg = config or Config()
+    log = None
     with RunLogger(run_log) as logger:
         log = logger.log
         report = {}
@@ -229,8 +230,9 @@ def single_run(auths, config=None, run_log=None, notifier=None):
     if notifier is not None:
         notifier.notify_report("result", report)
         for auth in auths:
+            targets, to_mails = account_routing(auth, warn=log)
             notifier.notify_account(auth["label"], report.get(auth["label"], []),
-                                    to_mails=account_mails(auth))
+                                    to_mails=to_mails, targets=targets)
     return report, any_error
 
 
@@ -582,12 +584,12 @@ class LoopRunner:
         except OSError as e:
             self.logger.log("事件明细写入失败: %s" % e)
 
-    def _account_mails(self, label):
-        """该账号在凭据条目里自带的通知邮箱（notify_mail），没有则用全局配置。"""
+    def _account_routing(self, label):
+        """该账号条目里的通知路由 (targets, to_mails)，没有则沿用全局配置。"""
         for auth in self.auths:
             if auth["label"] == label:
-                return account_mails(auth)
-        return None
+                return account_routing(auth, warn=self.logger.log)
+        return None, None
 
     def _notify(self, report, wave_count):
         """把结果推给通知通道——旁路行为，任何失败都不影响报告返回。"""
@@ -604,8 +606,9 @@ class LoopRunner:
         for label, items in (report or {}).items():
             timings = {name: value for (who, name), value
                        in last_try.items() if who == label}
+            targets, to_mails = self._account_routing(label)
             self.notifier.notify_account(label, items, timings=timings,
-                                         to_mails=self._account_mails(label))
+                                         to_mails=to_mails, targets=targets)
         expired = sorted({mask_label(label)
                           for label, items in (report or {}).items()
                           for item in items or []

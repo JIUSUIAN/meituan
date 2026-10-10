@@ -24,8 +24,10 @@
   消息通知：    配置 notify_targets = ["telegram","feishu","dingtalk",
                 "serverchan","email","webhook"] 里的任意几个，
                 收尾汇总 / 每账号领取详情 / 登录态失效 / 健康检查异常会推送到
-                这些通道；--no-notify 临时关掉，--notify 强制打开，
-                --notify-test 发一条测试消息校验通道是否真能送达。
+                这些通道；账号条目里写 "notify": {"targets": [...], "to": [...]}
+                或简写 "notify_mail": "邮箱" 可让每个账号走自己的通道与收件人。
+                --no-notify 临时关掉，--notify 强制打开，
+                --notify-test 按「全局 + 每账号路由」各发一条测试消息。
   凭据文件：    cookies.json 可以是单个账号对象，也可以是多账号数组
                 （每条自带 label；轮换回写只更新自己那一条）。
   配置文件：    可选 claim.config.json（本目录，字段见 chagee/config.Config），
