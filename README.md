@@ -4,8 +4,8 @@
 多账号并发、整点定时开抢、限流退避、会话凭据自动跟随，并把结果输出成可管道解析的 JSON。
 
 - 语言/依赖：Python ≥ 3.9，`requests`（Windows 另需 `tzdata`；邮件走标准库 `smtplib`）
-- 版本：`1.14.0`（真源 `chagee/__init__.py:__version__`）
-- 测试：210 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
+- 版本：`1.15.0`（真源 `chagee/__init__.py:__version__`）
+- 测试：197 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
 - 节奏与参数以**实测成功日志**为准（2026-10-09 23:59 那次整点抢：4 张券全中、响应 1.78~3.17s）
 
 ---
@@ -76,8 +76,7 @@ pip install -e .                                  # 或 pip install -r requireme
 ```
 
 `notify_mail` 可选：**每个账号自带通知收件人**（字符串或列表），该账号的领取详情
-（`account_result`）只发到这些邮箱；没写就回落到全局 `temp_email_to_mails` /
-`email_to`。它跟凭据同文件，因此同样不会进版本库。
+（`account_result`）只发到这些邮箱；没写就回落到全局 `email_to`。它跟凭据同文件，因此同样不会进版本库。
 
 加载规则（`security.load_auths`）：
 
@@ -263,38 +262,35 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
 | `dingtalk` | `dingtalk_webhook`（+ 可选 `dingtalk_secret` 加签） | text + HMAC-SHA256 签名 |
 | `serverchan` | `serverchan_send_key` | Server酱 `SCTxxx.send` 表单 |
 | `email` | `email_smtp_host`（可带端口）+ `email_to`，鉴权用 `email_user`/`email_password` | 标准库 `smtplib`，465 SSL 或 587 STARTTLS |
-| `temp_email` | `temp_email_api_url` + `temp_email_to_mails` + 鉴权二选一（`temp_email_admin_auth` / `temp_email_jwt`），管理员模式另需 `temp_email_from_mail` | 自建 [cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)：`POST /admin/send_mail`（`x-admin-auth` 头）或 `POST /api/send_mail`（`Bearer JWT`） |
 | `webhook` | `notify_webhook_url` | 通用 `POST {event, title, text}` |
 
-自建 [cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)
-的接法（它跑在 Cloudflare Workers 上，收信靠 Email Routing，发信需要为该域名开启
-Email Sending 绑定）：
+邮件通道举例（QQ/163 用授权码而不是登录密码）：
 
 ```json
 {
-  "notify_targets": ["temp_email"],
-  "temp_email_api_url": "https://temp-mail.你的域名.com",
-  "temp_email_admin_auth": "管理密码（后台设置里的那个）",
-  "temp_email_from_mail": "notice@你的域名.com",
-  "temp_email_to_mails": ["you@example.com"]
+  "notify_targets": ["email"],
+  "email_smtp_host": "smtp.qq.com:465",
+  "email_use_ssl": true,
+  "email_user": "你的邮箱@qq.com",
+  "email_password": "邮箱授权码",
+  "email_from": "你的邮箱@qq.com",
+  "email_to": ["you@example.com"]
 }
 ```
 
-`temp_email_from_mail` 必须是该服务里已存在的地址；若不想用管理密码，就把该地址
-登录得到的 JWT 填进 `temp_email_jwt`（走 `/api/send_mail`，发件人即该地址，
-不需要 `from_mail`）。多个收件人逐个发。`is_html` 固定 false，正文是纯文本。
-收件人可全局配 `temp_email_to_mails`，也可写在各账号 `cookies.json` 条目的
-`notify_mail` 里（后者只收自己账号的那条详情）。
+收件人可以全局配 `email_to`，也可以写在每个账号的 `cookies.json` 条目里
+（`notify_mail`，见 3.2）——后者只收自己账号那条 `account_result`。
+多个收件人逐个发。
 
-凭据管理密码/token 属敏感值：`claim.config.json` 已加入 `.gitignore`（示例文件
-`claim.config.example.json` 才入库），也可以用环境变量 `CHAGEE_TEMP_EMAIL_ADMIN_AUTH`
-注入。两者都会被登记进脱敏表，任何日志与报错里只会显示 `***`。
+凭据（token/webhook/授权码）属敏感值：`claim.config.json` 已加入 `.gitignore`
+（示例文件 `claim.config.example.json` 才入库），也可以用环境变量注入，例如
+`CHAGEE_EMAIL_PASSWORD`。两者都会被登记进脱敏表，日志与报错里只显示 `***`。
 
-自检命令会先探 `health_check`，再按通道强制发一条测试消息，收件人取
-「全局 `temp_email_to_mails` + 各账号 `notify_mail`」的并集：
+自检命令按通道强制发一条测试消息（绕过 `notify_events` 过滤），收件人取
+「全局 `email_to` + 各账号 `notify_mail`」的并集：
 
 ```bash
-chagee --notify-test      # 先 GET /health_check，再按通道发一条测试消息
+chagee --notify-test      # 逐通道结果打到 stdout，全成功退出码 0
 ```
 
 ```json
@@ -409,8 +405,6 @@ JSESSIONID 的机会（本项目会自动跟随回写）。
 | `通知[x] telegram: 失败 缺少配置: telegram_chat_id` | 只报缺的字段名；把值补进配置或环境变量 |
 | `通知[x] dingtalk: 失败 通道返回失败 errcode=310000` | 钉钉机器人安全设置不匹配（加签没填 `dingtalk_secret`，或关键词/IP 段受限） |
 | `通知[x] email: 失败 ...` | QQ/163 要用**授权码**而不是登录密码；465 走 `email_use_ssl`、587 走 `email_use_tls` |
-| `通知[x] temp_email: 失败 HTTP 400 ...` | 该域名没开 Email Sending 绑定、`temp_email_from_mail` 不是服务里已存在的地址，或管理密码错（先跑 `chagee --notify-test` 看 health_check） |
-| `通知[x] temp_email: 失败 需要 temp_email_admin_auth 或 temp_email_jwt` | 两种鉴权都没填；填管理密码（配 `from_mail`）或地址 JWT（不配 `from_mail`） |
 
 ---
 
@@ -431,7 +425,7 @@ chagee/
   notify.py              Notifier：Telegram/飞书/钉钉/Server酱/邮件/通用 webhook
   flows.py               ping / verify_session / single_run / LoopRunner（步骤方法化）
 tools/import_cookie_export.py  扩展导出 -> 认证文件（支持并入数组）
-tests/                   210 个 unittest（全部 mock）
+tests/                   197 个 unittest（全部 mock）
 .github/workflows/ci.yml 多版本 Python 测试 + compileall + 凭据入库守卫
 ```
 
@@ -469,6 +463,7 @@ python -m compileall -q chagee tests tools claim.py
 
 ## 14. 版本与演进
 
+`1.15.0` 移除 `temp_email` 通道（那套自建服务只配了收信、未配发信，实测被服务端拒绝）；
 `1.14.0` 收件人可写在账号凭据条目里（`notify_mail`，一账号一份收件箱），
 并把 `claim.config.json` 加入 gitignore、通知凭据在配置加载后立刻登记脱敏；
 `1.13.0` 新增 `temp_email` 通道（自建 cloudflare_temp_email 发信：管理密码或地址 JWT

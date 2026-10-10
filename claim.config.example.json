@@ -18,7 +18,7 @@
   "notify_targets": [],
   "notify_events": ["result", "account_result", "auth_expired", "health"],
   "notify_mask_labels": true,
-  "_通知说明": "notify_targets 填通道名才会推送，可选 telegram / feishu / dingtalk / serverchan / email / webhook；account_result = 每个账号单独一条领取详情，嫌吵就从 notify_events 里去掉",
+  "_通知说明": "notify_targets 填通道名才会推送，可选 telegram / feishu / dingtalk / serverchan / email / webhook；account_result = 每个账号单独一条领取详情（收件人可在账号条目里用 notify_mail 指定），嫌吵就从 notify_events 里去掉",
   "_通知凭据提醒": "token/webhook/sendkey/SMTP 授权码都是凭据：别提交进仓库，推荐用 CHAGEE_* 环境变量注入（如 CHAGEE_TELEGRAM_BOT_TOKEN）",
   "_通知示例": {
     "notify_targets": ["telegram", "feishu"],
@@ -36,11 +36,6 @@
     "email_to": ["收件邮箱1", "收件邮箱2"],
     "email_use_ssl": true,
     "email_use_tls": false,
-    "email_subject_prefix": "[抢券] ",
-    "temp_email_api_url": "https://temp-mail.你的域名.com（cloudflare_temp_email 自建）",
-    "temp_email_admin_auth": "管理密码（走 /admin/send_mail + x-admin-auth）",
-    "temp_email_jwt": "或者地址 JWT（走 /api/send_mail + Bearer，二选一）",
-    "temp_email_from_mail": "notice@你的域名.com（须是该服务里已存在的地址）",
-    "temp_email_to_mails": ["指定通知邮箱"]
+    "email_subject_prefix": "[抢券] "
   }
 }
