@@ -104,7 +104,7 @@ def _notify_test(cfg, ap):
         if notifier.enabled:
             out["__global__"] = notifier.notify(
                 "test", "这是一条 chagee 通知测试消息（全局通道）。",
-                force=True, to_mails=tuple(cfg.email_to or ()) or None)
+                force=True, to_mails=tuple(cfg.notify_to_mails or ()) or None)
         for auth in accounts:
             targets, to_mails = account_routing(auth, warn=warn)
             if not (targets or to_mails):
@@ -117,7 +117,10 @@ def _notify_test(cfg, ap):
                      "notify / notify_mail（可用 --notify-test 前先配好通道）")
     finally:
         notifier.close()
-    print(json.dumps(out, ensure_ascii=False, indent=2))
+    print(json.dumps({who: {ch: {"ok": ok, "detail": msg}
+                            for ch, ok, msg in results}
+                      for who, results in out.items()},
+                     ensure_ascii=False, indent=2))
     flat = [ok for results in out.values() for _, ok, _ in results]
     return 0 if flat and all(flat) else 1
 

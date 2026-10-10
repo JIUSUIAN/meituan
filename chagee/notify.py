@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""消息通知：Telegram / 飞书 / 钉钉 / Server酱 / 邮件 / 通用 webhook。
+"""消息通知：Telegram / 飞书 / 钉钉 / Server酱 / 邮件(SMTP) / Resend / 通用 webhook。
 
 三条边界：
 
@@ -29,7 +29,8 @@ import requests
 from .config import Config
 from .security import GLOBAL_SECRETS
 
-CHANNELS = ("telegram", "feishu", "dingtalk", "serverchan", "email", "webhook")
+CHANNELS = ("telegram", "feishu", "dingtalk", "serverchan", "email",
+            "resend", "webhook")
 
 # 每个通道必需的配置项（缺失时只报字段名，不报值）
 REQUIRED = {
@@ -37,7 +38,8 @@ REQUIRED = {
     "feishu": ("feishu_webhook",),
     "dingtalk": ("dingtalk_webhook",),
     "serverchan": ("serverchan_send_key",),
-    "email": ("email_smtp_host", "email_to"),
+    "email": ("email_smtp_host", "notify_to_mails"),
+    "resend": ("resend_api_key", "resend_from", "notify_to_mails"),
     "webhook": ("notify_webhook_url",),
 }
 
@@ -50,7 +52,7 @@ SUCCESS_RULES = {
 }
 
 # 可由单次调用覆盖收件人的通道：字段 -> 覆盖入口
-RECIPIENT_FIELDS = {"email": "email_to"}
+RECIPIENT_FIELDS = {"email": "notify_to_mails", "resend": "notify_to_mails"}
 
 EVENT_TITLES = {
     "result": "CHAGEE 抢券结果",
@@ -65,16 +67,21 @@ EVENT_TITLES = {
 _SECRET_FIELDS = ("telegram_bot_token", "telegram_chat_id", "feishu_webhook",
                   "dingtalk_webhook", "dingtalk_secret", "serverchan_send_key",
                   "notify_webhook_url", "email_password", "email_user",
-                  "email_from")
+                  "email_from", "resend_api_key")
 
 
 def mask_label(label):
     """把 label 里的长数字（多为手机号）掩成 前3****后2。
 
-    通知会推给第三方服务，账号标识默认不带完整手机号。"""
+    通知会推给第三方服务，账号标识默认不带完整手机号。
+    label 里已经带 * 的（用户自己打过码，如 177****7689）原样返回——
+    二次打码会让标识糊成一团，认不出是哪个账号。"""
+    text = str(label)
+    if "*" in text:
+        return text
     return re.sub(r"\d{4,}",
                   lambda m: m.group()[:3] + "****" + m.group()[-2:],
-                  str(label))
+                  text)
 
 
 def register_config_secrets(cfg, secrets=None):
@@ -324,37 +331,39 @@ class Notifier:
                        data={"title": title, "desp": text})
         elif channel == "email":
             self._send_email(title, text, to_mails=to_mails)
+        elif channel == "resend":
+            self._send_resend(title, text, to_mails=to_mails)
         elif channel == "webhook":
             self._post(cfg.notify_webhook_url, None,
                        json={"event": event, "title": title, "text": text})
         else:
             raise ValueError("未知通知通道: %s" % channel)
 
-    def _post(self, url, channel, json=None, data=None):
-        r = self.session.post(url, json=json, data=data,
+    def _post(self, url, channel, json=None, data=None, headers=None):
+        """发一次请求并做通用错误判定，返回解析后的 JSON（或 None）。
+
+        这些 webhook 常见「HTTP 200 但业务失败」，所以除了状态码还要看 body
+        里的成功标志（SUCCESS_RULES），否则会把没送达当成功。"""
+        r = self.session.post(url, json=json, data=data, headers=headers,
                               timeout=self.cfg.notify_timeout)
         if getattr(r, "status_code", 200) >= 400:
             raise RuntimeError("HTTP %s: %s"
                                % (r.status_code,
                                   self.secrets.redact(r.text)[:120]))
-        rule = SUCCESS_RULES.get(channel) if channel else None
-        if not rule:
-            return
-        # 这些 webhook 常见「HTTP 200 但业务失败」，不看 body 会把失败当成功
         try:
             payload = r.json()
         except Exception:
-            return
+            return None
         if not isinstance(payload, dict):
-            return
-        field, good = rule
-        if field not in payload:
-            return
-        value = payload[field]
-        if value not in good:
-            raise RuntimeError("通道返回失败 %s=%s: %s"
-                               % (field, value,
-                                  self.secrets.redact(str(payload))[:120]))
+            return None
+        rule = SUCCESS_RULES.get(channel) if channel else None
+        if rule:
+            field, good = rule
+            if field in payload and payload[field] not in good:
+                raise RuntimeError("通道返回失败 %s=%s: %s"
+                                   % (field, payload[field],
+                                      self.secrets.redact(str(payload))[:120]))
+        return payload
 
     def _open_smtp(self, host, port, use_ssl):
         if self.smtp_factory is not None:
@@ -368,9 +377,9 @@ class Notifier:
         port = port or cfg.email_smtp_port
         if not host:
             raise RuntimeError("缺少 SMTP 主机配置")
-        recipients = tuple(to_mails or ()) or tuple(cfg.email_to or ())
+        recipients = tuple(to_mails or ()) or tuple(cfg.notify_to_mails or ())
         if not recipients:
-            raise RuntimeError("缺少收件邮箱（email_to 或本次覆盖的 to_mails）")
+            raise RuntimeError("缺少收件邮箱（notify_to_mails 或账号的 to）")
         message = EmailMessage()
         message["From"] = cfg.email_from or cfg.email_user or "chagee@localhost"
         message["To"] = ", ".join(recipients)
@@ -388,3 +397,24 @@ class Notifier:
                 server.quit()
             except Exception:
                 pass
+
+    def _send_resend(self, title, text, to_mails=None):
+        """Resend API：POST https://api.resend.com/emails。
+
+        域名在 Resend 验证过就能发，不需要 SMTP；收件人一次调用给一个列表，
+        多个收件人不必逐个发。响应里有 id 才算受理，否则按失败处理。"""
+        cfg = self.cfg
+        recipients = tuple(to_mails or ()) or tuple(cfg.notify_to_mails or ())
+        if not recipients:
+            raise RuntimeError("缺少收件邮箱（notify_to_mails 或账号的 to）")
+        sender = cfg.resend_from
+        if "<" not in sender:
+            sender = "%s <%s>" % (cfg.resend_from_name or "chagee", sender)
+        payload = self._post(
+            "https://api.resend.com/emails", None,
+            json={"from": sender, "to": list(recipients),
+                  "subject": title, "text": text},
+            headers={"Authorization": "Bearer " + cfg.resend_api_key})
+        if not (payload or {}).get("id"):
+            raise RuntimeError("Resend 未返回消息 id: %s"
+                               % self.secrets.redact(str(payload))[:120])

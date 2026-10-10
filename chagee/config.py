@@ -82,6 +82,9 @@ class Config:
     dingtalk_secret: str = ""         # 机器人「加签」密钥，留空则不签名
     serverchan_send_key: str = ""
     notify_webhook_url: str = ""      # 通用 webhook：POST {event,title,text}
+    # 邮件类通道（email / resend）的全局收件人；账号条目里的
+    # notify.to / notify_mail 可以覆盖它
+    notify_to_mails: tuple = ()
     # 邮件：QQ/163 用 smtp 主机 + 授权码 + SSL(465)；Gmail 用 STARTTLS(587)
     email_smtp_host: str = ""         # 可写 'smtp.qq.com:465' 覆盖端口
     email_smtp_port: int = 465
@@ -90,8 +93,11 @@ class Config:
     email_user: str = ""
     email_password: str = ""          # 授权码/应用专用密码，不是登录密码
     email_from: str = ""
-    email_to: tuple = ()
     email_subject_prefix: str = ""
+    # Resend（https://resend.com）：域名验证后直接用 API 发信，无需 SMTP
+    resend_api_key: str = ""          # 建议用环境变量 CHAGEE_RESEND_API_KEY 注入
+    resend_from: str = ""             # 例 no-reply@email.example.com（已验证域名）
+    resend_from_name: str = "chagee 抢券"
 
     # --- 运行参数（CLI/环境变量可覆盖） ---
     loop_minutes: float = 10
