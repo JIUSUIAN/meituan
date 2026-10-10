@@ -7,12 +7,14 @@ P1 变更：
 - 节奏控制走注入的 GrantPacing；
 - 业务错误分类全部基于结构化 code（errors.classify_grant_error）。
 """
+import json
 import subprocess
 import sys
 import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,11 +26,6 @@ from .errors import (AUTH_EXPIRED_CODES, ApiError, ApiTransportError,
 from .models import Coupon, GrantEvent
 from .pacing import GrantPacing
 from .security import GLOBAL_SECRETS
-
-# 会话验证探针：用满28减10（固定ID）试领取来证明登录态。
-# 该操作有业务副作用：若当天满28减10尚未领取，会实际领掉一张。
-# 仅供 verify_session（--verify-session）显式调用；只读的 ping 绝不进领取路径。
-PING_PROBE_ID = "6a5f1a1d4d7fef55f1590b26"
 
 
 def beijing_ts():
@@ -91,6 +88,9 @@ def ping(auths, config=None, log_path=None):
       error      —— 网络/HTTP 层失败
     """
     cfg = config or Config()
+    probe = cfg.probe_coupon
+    if not probe:
+        raise ValueError("配置里没有可用作探针的券（probe_coupon 为空）")
     report = {}
     log_lines = []
     for auth in auths:
@@ -101,16 +101,16 @@ def ping(auths, config=None, log_path=None):
                 try:
                     # info 不校验登录，仅用于确认服务可达
                     client.coupon_info(timeout=cfg.ping_timeout)
-                    client.grant_status([PING_PROBE_ID], timeout=cfg.ping_timeout)
+                    client.grant_status([probe["couponId"]],
+                                        timeout=cfg.ping_timeout)
                     report[label] = "reachable"
                 except ApiError as e:
                     if e.code in AUTH_EXPIRED_CODES:
                         report[label] = "expired"
                     else:
                         report[label] = "unknown"  # 保留原始 code，不误分类
-        except ApiTransportError as e:
-            report[label] = "error: " + str(e)[:120]
         except Exception as e:
+            # 传输层/HTTP 层失败与其他意外一律归为 error，消息已脱敏限长
             report[label] = "error: " + str(e)[:120]
         log_lines.append("%s [%s] %s (%.2fs)" %
                          (beijing_ts(), label, report[label], time.time() - t0))
@@ -125,6 +125,10 @@ def verify_session(auths, config=None, log_path=None):
     每账号返回：authenticated / expired / unknown / error: ...
     """
     cfg = config or Config()
+    probe_cfg = cfg.probe_coupon
+    if not probe_cfg:
+        raise ValueError("配置里没有可用作探针的券（probe_coupon 为空）")
+    probe = Coupon.from_api(probe_cfg)
     report = {}
     log_lines = []
     for auth in auths:
@@ -132,8 +136,6 @@ def verify_session(auths, config=None, log_path=None):
         t0 = time.time()
         try:
             with ApiClient(auth, config=cfg) as client:
-                probe = Coupon(coupon_id=PING_PROBE_ID,
-                               coupon_type="PHONE_REWARD")
                 status, detail = try_grant(client, cfg.fixed_brand_id, probe,
                                            config=cfg)
             if status in ("granted", "already_claimed", "out_of_stock"):
@@ -268,13 +270,15 @@ def _single_run_accounts(auths, cfg, log, report):
 
 
 def wait_until(target_str):
-    """等到目标时刻（HH:MM:SS[.毫秒]，按 Asia/Shanghai 解析，不受系统时区影响）
+    """等到目标时刻（HH:MM[:SS[.毫秒]]，按 Asia/Shanghai 解析，不受系统时区影响）
     再返回；目标已过则直接返回。最后 5ms 忙等，保证毫秒级精度。"""
     tz = ZoneInfo("Asia/Shanghai")
     now_bj = datetime.now(tz)  # 取北京时间的日期，避免系统时区干扰
     parts = target_str.split(":")
+    if len(parts) < 2:
+        raise ValueError("开火时刻格式应为 HH:MM[:SS[.毫秒]]: %s" % target_str)
     h, m = int(parts[0]), int(parts[1])
-    sec = float(parts[2])
+    sec = float(parts[2]) if len(parts) > 2 else 0.0
     target_dt = datetime(now_bj.year, now_bj.month, now_bj.day,
                          h, m, int(sec), int((sec - int(sec)) * 1e6),
                          tzinfo=tz)
@@ -284,9 +288,12 @@ def wait_until(target_str):
         return
     print("等待 %.1fs 至 %s（北京时间）准时开抢..." % (delta, target_str),
           file=sys.stderr, flush=True)
+    # 剩余时长用单调钟锚定：Windows 上 time.time 分辨率约 15ms，
+    # 忙等段若继续比对 time.time 可能整体偏移一个 tick
+    end = time.perf_counter() + delta
     if delta > 0.005:
         time.sleep(delta - 0.005)
-    while time.time() < target:
+    while time.perf_counter() < end:
         pass
 
 
@@ -304,10 +311,20 @@ class LoopRunner:
                  fire_at=None, run_log=None, logger=None):
         self.auths = auths
         self.cfg = config or Config()
+        # 目标为空时每波都是 0 任务、_all_settled 永远不成立，会空转到超时；
+        # 配置错误应当在启动时就报出来，而不是静默跑十分钟
+        if not self.cfg.snipe_coupons:
+            raise ValueError(
+                "抢券目标为空：关键词 %r 未匹配到任何固定券，"
+                "请检查 snipe_keyword / fixed_coupons 配置"
+                % self.cfg.snipe_keyword)
         self.minutes = minutes
         self.interval = interval
         self.fire_at = fire_at
         self.logger = logger or RunLogger(run_log)
+        # 结构化事件副本（JSONL），与人读日志同名同目录；未给 run_log 则不落盘
+        self.events_path = (Path(run_log).with_suffix(".jsonl")
+                            if run_log else None)
 
         def rotate_cb(label):
             def cb(name):
@@ -506,6 +523,20 @@ class LoopRunner:
         if first_wave:
             log("第一波发送时刻: %s" % " | ".join(e.send_ts for e in first_wave))
 
+    def _dump_events(self):
+        """把 GrantEvent 明细追加写 JSONL：人读日志之外的机器可读副本，
+        事后可脚本化复盘发送时刻/耗时分布（调参依据）。纯 best-effort。"""
+        if not self.events_path or not self.events:
+            return
+        try:
+            self.events_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.events_path, "a", encoding="utf-8") as f:
+                for e in self.events:
+                    f.write(json.dumps(asdict(e), ensure_ascii=False) + "\n")
+            self.logger.log("事件明细已写入: %s" % self.events_path)
+        except OSError as e:
+            self.logger.log("事件明细写入失败: %s" % e)
+
     def _finalize(self):
         """收尾：用 grant-status 补一次状态校验（直接用目标券，不再拉列表）。"""
         log = self.logger.log
@@ -575,6 +606,7 @@ class LoopRunner:
                 # Ctrl+C：不裸退，进入收尾统计 + 状态校验，保住已有战果
                 log("收到中断信号，跳过剩余波次，进入收尾统计与状态校验...")
             self._log_summary(wave_count)
+            self._dump_events()
             return self._finalize()
         finally:
             for c in self.clients.values():

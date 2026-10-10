@@ -190,5 +190,7 @@ class ApiClient:
             return {}
         st = self.post(self.config.grant_status_path,
                        {"superCouponIds": ids}, timeout=timeout)
+        # 历史响应里键名有过 couponId / superCouponId 两种写法，按请求侧字段名
+        # 优先取 couponId；两者同时出现时以 couponId 为准（与 grant 请求一致）
         return {(g.get("couponId") or g.get("superCouponId")): g.get("status")
                 for g in ((st or {}).get("grantItems") or [])}

@@ -6,7 +6,7 @@ pacing/flows 的实例里，不放模块全局）。
 """
 import json
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 from typing import Optional
 
@@ -76,6 +76,15 @@ class Config:
         return [c for c in self.fixed_coupons
                 if self.snipe_keyword in c["couponName"]]
 
+    @property
+    def probe_coupon(self):
+        """会话验证探针券：固定券里不属于抢券目标的那张（满28减10）。
+
+        与 fixed_coupons 同源——券 ID 只有一处定义，避免两处漂移。
+        没有符合条件的券时返回 None，调用方需明确报错而不是猜一个 ID。"""
+        return next((c for c in self.fixed_coupons
+                     if self.snipe_keyword not in c["couponName"]), None)
+
 
 def _cast(value, target_type):
     """把字符串值转成字段默认值的类型。"""
@@ -117,9 +126,16 @@ def load_config(path=None, overrides=None):
 
     for f in fields(Config):
         env_key = ENV_PREFIX + f.name.upper()
-        if env_key in os.environ:
-            values[f.name] = _cast(os.environ[env_key], type(f.default)
-                                   if f.default is not None else str)
+        if env_key not in os.environ:
+            continue
+        if f.default is MISSING:
+            # default_factory 字段（fixed_coupons）是嵌套结构，环境变量表达不了；
+            # 与其静默塞进一个字符串让 Config(**values) 炸出难懂的 TypeError，
+            # 不如在这里就报清楚
+            raise ValueError("字段 %s 不支持环境变量覆盖（请改配置文件）: %s"
+                             % (f.name, env_key))
+        values[f.name] = _cast(os.environ[env_key],
+                               type(f.default) if f.default is not None else str)
 
     for k, v in (overrides or {}).items():
         if v is not None:

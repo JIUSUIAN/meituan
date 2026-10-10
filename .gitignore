@@ -2,6 +2,13 @@
 cookies.json
 cookies-new.json
 *.log
+*.jsonl
 .env
 .venv/
 __pycache__/
+# save_auth 原子写的中转文件（含凭据，崩溃可能残留）
+*.tmp
+# 打包产物
+*.egg-info/
+build/
+dist/

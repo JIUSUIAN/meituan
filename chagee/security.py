@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 # 敏感字段清单：值可进内存与请求头，但不得进日志、异常信息或版本库
@@ -84,6 +85,19 @@ def _coerce_cookies(raw):
     raise ValueError("cookies 字段格式错误（应为对象或数组）")
 
 
+def _cleanup_orphan_tmp(p):
+    """清理上次崩溃残留的中转文件（含凭据，不能长期躺在磁盘上）。
+
+    只删 60 秒前的：并发进程可能正在写自己的中转文件，不能误删在途写入。"""
+    cutoff = time.time() - 60
+    for orphan in p.parent.glob(p.name + ".*.tmp"):
+        try:
+            if orphan.stat().st_mtime < cutoff:
+                orphan.unlink()
+        except OSError:
+            pass
+
+
 def load_auth(path, base_dir=None, secrets=None):
     """加载账号凭据。按 文件存在 -> JSON 合法 -> 归一化 -> 必填字段 -> 权限
     顺序校验，并保证顶层鉴权字段与 cookies 字典一致（顶层为权威）。
@@ -99,6 +113,7 @@ def load_auth(path, base_dir=None, secrets=None):
     p = base / path
     if not p.exists():
         raise FileNotFoundError("认证文件不存在: %s" % path)
+    _cleanup_orphan_tmp(p)
     try:
         raw = json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
@@ -152,16 +167,26 @@ def save_auth(auth, path):
     """原子回写认证文件：剔除下划线开头的内部字段，POSIX 下收紧为 600 权限。
 
     只应写经过 load_auth 加载的结构；内容不打印、不进日志。
-    label 不回写——它由 load_auth 按文件路径重新推导。"""
+    label 不回写——它由 load_auth 按文件路径重新推导。
+    中转文件名带 pid（cookies.json.1234.tmp）：多进程并发保存互不覆盖，
+    且 *.tmp 已被 gitignore 覆盖，崩溃残留不会误入库。"""
     data = {k: v for k, v in auth.items()
             if not k.startswith("_") and k != "label"}
     p = Path(path)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                   encoding="utf-8")
-    if os.name == "posix":
+    tmp = p.with_name("%s.%d.tmp" % (p.name, os.getpid()))
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        if os.name == "posix":
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+        os.replace(tmp, p)
+    except BaseException:
+        # 写入中途失败不能留下带凭据的中转文件
         try:
-            os.chmod(tmp, 0o600)
+            tmp.unlink()
         except OSError:
             pass
-    os.replace(tmp, p)
+        raise
