@@ -4,6 +4,7 @@
 全部 mock（注入假 session / 假 SMTP），不发真实请求。
 运行：python -m unittest discover -s tests -t . -v
 """
+import argparse
 import contextlib
 import io
 import json
@@ -15,7 +16,8 @@ import requests
 from chagee import flows
 from chagee.config import Config, load_config
 from chagee.models import Coupon
-from chagee.notify import (CHANNELS, Notifier, dingtalk_signed_url, mask_label)
+from chagee.notify import (CHANNELS, REQUIRED, Notifier, dingtalk_signed_url,
+                           mask_label)
 from chagee.security import GLOBAL_SECRETS
 
 WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/abc123def456789"
@@ -35,17 +37,26 @@ class FakeResp:
 
 
 class FakeSession:
-    def __init__(self, resp=None, error=None):
+    def __init__(self, resp=None, error=None, get_resp=None):
         self.calls = []
+        self.gets = []
         self.resp = resp if resp is not None else FakeResp(200, {"code": 0})
+        self.get_resp = get_resp if get_resp is not None else FakeResp(
+            200, text="OK")
         self.error = error
 
-    def post(self, url, json=None, data=None, timeout=None):
+    def post(self, url, json=None, data=None, headers=None, timeout=None):
         self.calls.append({"url": url, "json": json, "data": data,
-                           "timeout": timeout})
+                           "headers": headers, "timeout": timeout})
         if self.error is not None:
             raise self.error
         return self.resp
+
+    def get(self, url, headers=None, timeout=None):
+        self.gets.append({"url": url, "headers": headers, "timeout": timeout})
+        if self.error is not None:
+            raise self.error
+        return self.get_resp
 
     def close(self):
         pass
@@ -204,8 +215,10 @@ class NotifyGatingTest(unittest.TestCase):
         self.assertEqual(2, len(session.calls))
 
     def test_all_channels_covered_by_required_map(self):
-        self.assertEqual(set(CHANNELS), set(("telegram", "feishu", "dingtalk",
-                                             "serverchan", "email", "webhook")))
+        self.assertEqual(set(CHANNELS),
+                         {"telegram", "feishu", "dingtalk", "serverchan",
+                          "email", "temp_email", "webhook"})
+        self.assertEqual(set(CHANNELS), set(REQUIRED))
 
 
 class NotifyFailureTest(unittest.TestCase):
@@ -604,6 +617,173 @@ class NotifyConfigTest(unittest.TestCase):
         finally:
             cli.Notifier = original
         self.assertFalse(captured["enabled"])
+
+
+class TempEmailChannelTest(unittest.TestCase):
+    """cloudflare_temp_email 自建服务：/admin/send_mail（x-admin-auth）
+    与 /api/send_mail（Bearer JWT）两种发信方式。"""
+
+    BASE = "https://temp-mail.example.com"
+
+    def setUp(self):
+        GLOBAL_SECRETS.clear()
+        self.addCleanup(GLOBAL_SECRETS.clear)
+
+    def _notifier(self, resp=None, error=None, log=None, get_resp=None, **over):
+        base = dict(temp_email_api_url=self.BASE,
+                    temp_email_admin_auth="ADMINPASS123SECRET",
+                    temp_email_from_mail="notify@temp-mail.example.com",
+                    temp_email_to_mails=("me@example.com",),
+                    notify_targets=("temp_email",))
+        base.update(over)
+        self.session = FakeSession(resp=resp or FakeResp(200, {"status": "ok"}),
+                                   error=error, get_resp=get_resp)
+        self.lines = []
+        notifier = Notifier(config=cfg_with(**base), session=self.session,
+                            log=log if log is not None else self.lines.append)
+        return notifier
+
+    def test_admin_mode_request_shape(self):
+        notifier = self._notifier()
+        results = notifier.notify("result", "正文")
+        self.assertTrue(results[0][1], results[0])
+        call = self.session.calls[0]
+        self.assertEqual(self.BASE + "/admin/send_mail", call["url"])
+        self.assertEqual({"x-admin-auth": "ADMINPASS123SECRET"}, call["headers"])
+        body = call["json"]
+        self.assertEqual("notify@temp-mail.example.com", body["from_mail"])
+        self.assertEqual("me@example.com", body["to_mail"])
+        self.assertEqual("正文", body["content"])
+        self.assertIs(False, body["is_html"])
+
+    def test_trailing_slash_in_url_not_doubled(self):
+        notifier = self._notifier(temp_email_api_url=self.BASE + "/")
+        notifier.notify("result", "x")
+        self.assertEqual(self.BASE + "/admin/send_mail",
+                         self.session.calls[0]["url"])
+
+    def test_jwt_mode_uses_user_endpoint_and_bearer(self):
+        notifier = self._notifier(temp_email_admin_auth="",
+                                  temp_email_jwt="JWT987SECRET",
+                                  temp_email_from_mail="")
+        notifier.notify("result", "x")
+        call = self.session.calls[0]
+        self.assertEqual(self.BASE + "/api/send_mail", call["url"])
+        self.assertEqual({"Authorization": "Bearer JWT987SECRET"},
+                         call["headers"])
+        self.assertNotIn("from_mail", call["json"])
+
+    def test_multiple_recipients_one_post_each(self):
+        notifier = self._notifier(
+            temp_email_to_mails=("a@example.com", "b@example.com"))
+        notifier.notify("result", "x")
+        self.assertEqual(2, len(self.session.calls))
+        self.assertEqual(["a@example.com", "b@example.com"],
+                         [c["json"]["to_mail"] for c in self.session.calls])
+
+    def test_business_failure_detected(self):
+        notifier = self._notifier(resp=FakeResp(200, {"status": "error"}))
+        _, ok, detail = notifier.notify("result", "x")[0]
+        self.assertFalse(ok)
+        self.assertIn("通道返回失败", detail)
+
+    def test_http_400_text_body_reported(self):
+        notifier = self._notifier(resp=FakeResp(400, text="enable send mail first"))
+        _, ok, detail = notifier.notify("result", "x")[0]
+        self.assertFalse(ok)
+        self.assertIn("HTTP 400", detail)
+
+    def test_no_credential_mode_reports_field_names(self):
+        notifier = self._notifier(temp_email_admin_auth="", temp_email_jwt="")
+        _, ok, detail = notifier.notify("result", "x")[0]
+        self.assertFalse(ok)
+        self.assertIn("temp_email_admin_auth", detail)
+        self.assertIn("temp_email_jwt", detail)
+
+    def test_admin_mode_requires_from_mail_field_name(self):
+        notifier = self._notifier(temp_email_from_mail="")
+        _, ok, detail = notifier.notify("result", "x")[0]
+        self.assertFalse(ok)
+        self.assertIn("temp_email_from_mail", detail)
+
+    def test_missing_recipients_reports_field(self):
+        notifier = self._notifier(temp_email_to_mails=())
+        _, ok, detail = notifier.notify("result", "x")[0]
+        self.assertFalse(ok)
+        self.assertIn("temp_email_to_mails", detail)
+        self.assertEqual([], self.session.calls)
+
+    def test_secrets_never_logged(self):
+        notifier = self._notifier(resp=FakeResp(403, text="bad ADMINPASS123SECRET"))
+        notifier.notify("result", "x")
+        text = "\n".join(self.lines)
+        self.assertNotIn("ADMINPASS123SECRET", text)
+        self.assertIn("***", text)
+
+    def test_probe_service_health_check(self):
+        notifier = self._notifier()
+        ok, detail = notifier.probe_service()
+        self.assertTrue(ok)
+        self.assertEqual(self.BASE + "/health_check", self.session.gets[0]["url"])
+
+    def test_probe_service_failure_is_quiet(self):
+        notifier = self._notifier(error=requests.ConnectionError("no route"))
+        ok, detail = notifier.probe_service()
+        self.assertFalse(ok)
+        self.assertIn("no route", detail)
+
+
+class CliNotifyTest(unittest.TestCase):
+    def test_notify_test_forces_event_and_returns_zero(self):
+        from chagee import cli
+        sent = []
+
+        class Stub:
+            targets = ("temp_email",)
+            enabled = True
+
+            @classmethod
+            def from_config(cls, cfg):
+                return cls()
+
+            def probe_service(self):
+                return True, "OK"
+
+            def notify(self, event, text, title=None, force=False):
+                sent.append((event, force))
+                return [("temp_email", True, "已发送")]
+
+            def close(self):
+                pass
+
+        cfg = Config(notify_targets=("temp_email",),
+                    temp_email_api_url="https://temp-mail.example.com")
+        with mock.patch.object(cli, "Notifier", Stub):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                code = cli._notify_test(cfg, argparse.ArgumentParser())
+        self.assertEqual(0, code)
+        self.assertEqual([("test", True)], sent)
+        self.assertIn("temp_email", out.getvalue())
+
+    def test_notify_test_errors_when_no_channel(self):
+        from chagee import cli
+
+        class Disabled:
+            enabled = False
+            targets = ()
+
+            @classmethod
+            def from_config(cls, cfg):
+                return cls()
+
+            def close(self):
+                pass
+
+        with mock.patch.object(cli, "Notifier", Disabled):
+            with self.assertRaises(SystemExit):
+                cli._notify_test(Config(), argparse.ArgumentParser())
 
 
 if __name__ == "__main__":
