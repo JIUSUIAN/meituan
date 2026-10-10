@@ -13,12 +13,16 @@
                 注意：有业务副作用！用探针券尝试一次领取来证明登录态，
                 若当天探针券未领取，会实际领掉一张。
   循环抢券：    python3 claim.py --loop [--minutes 10] [--interval 2.0]
-                [--fire-at 14:00:00.000]
-              循环模式：双账号并发尝试领取，每轮内请求错峰发出
-              （第一波 0.05s 极限间隔、最多 4 并发；之后 0.5s 安全模式；
-               命中限流后该账号退避 60 秒）。
-  指定账号：    python3 claim.py --loop --accounts cookies-new
+                [--fire-at 23:59:59.70] [--fire-lead 0.3]
+              循环模式：多账号并发尝试领取，每轮内请求错峰发出
+              （第一波 0.05s 极限间隔、最多 6 在飞（账号数×2 张券）；
+               之后 0.5s 安全模式；命中限流后该账号退避 60 秒）。
+              --fire-lead 是开火提前量：整点抢实测响应 1.8~3.2s，
+              提前 0.3s 发出让请求在整点那一刻已到达服务端。
+  指定账号：    python3 claim.py --loop --accounts 小号
                 只跑匹配 label/认证文件名的账号（逗号分隔可多选）。
+  凭据文件：    cookies.json 可以是单个账号对象，也可以是多账号数组
+                （每条自带 label；轮换回写只更新自己那一条）。
   配置文件：    可选 claim.config.json（本目录，字段见 chagee/config.Config），
                 亦可被 CHAGEE_* 环境变量与 CLI 参数覆盖（优先级递增）。
 输出：JSON 走 stdout（日志走 stderr，可 `2>/dev/null > result.json`）。

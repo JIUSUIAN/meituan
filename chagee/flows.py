@@ -482,7 +482,12 @@ class LoopRunner:
         try:
             r = subprocess.run(["timedatectl", "show", "-p", "NTPSynchronized"],
                                capture_output=True, text=True, timeout=2)
-            out = r.stdout.strip() or "timedatectl无输出"
+            out = r.stdout.strip()
+            if not out:
+                # 实测踩过：非 systemd 环境这条命令返回空，只说「无输出」没用
+                out = "无输出（rc=%s%s）" % (
+                    r.returncode,
+                    "，%s" % r.stderr.strip()[:80] if r.stderr.strip() else "")
             self.logger.log("时钟校验: %s" % out)
         except Exception as e:
             self.logger.log("时钟校验跳过: %s" % e)
@@ -591,7 +596,8 @@ class LoopRunner:
                     self._preheat_and_wait()
                 deadline = time.time() + self.minutes * 60
                 # 6 线程：双账号 × 优先券；实际领取请求由在飞闸门限制
-                with ThreadPoolExecutor(max_workers=6) as pool:
+                # 线程数按账号数与目标券数推导；实际领取请求仍由在飞闸门限制
+                with ThreadPoolExecutor(max_workers=self.pool_workers) as pool:
                     # 固定券已就位，第一波零等待纯开抢（不掺刷新请求，避免叠加触发限流）；
                     # 第一波结束后立即后台刷新一次，之后每30秒刷新，只做增量合并
                     last_refresh = time.time()
