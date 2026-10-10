@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import DIR, Config, load_config
 from .flows import beijing_ts, loop_run, ping, single_run, verify_session
+from .notify import Notifier
 from .security import load_auths
 
 # 开火时刻：HH:MM[:SS[.毫秒]]，秒可省略
@@ -94,6 +95,10 @@ def main(argv=None):
                     help="JSON 配置文件路径（默认同目录 claim.config.json，存在才读）")
     ap.add_argument("--accounts", default=None,
                     help="只运行指定账号（逗号分隔，按 label 或认证文件名匹配）")
+    ap.add_argument("--notify", dest="notify", action="store_true", default=None,
+                    help="强制开启通知（按配置的 notify_targets 通道发送）")
+    ap.add_argument("--no-notify", dest="notify", action="store_false",
+                    default=None, help="本次运行不发送通知")
     ap.add_argument("--ping", action="store_true",
                     help="只读健康检查：仅调用 info/grant-status 只读接口，"
                          "无业务副作用；无法证明登录态时返回 reachable")
@@ -110,6 +115,7 @@ def main(argv=None):
         "loop_interval": args.interval,
         "fire_at": args.fire_at,
         "fire_lead": args.fire_lead,
+        "notify_enabled": args.notify,
     })
 
     # 配置层校验先于凭据加载：配置写错时不该先去读 cookies 文件
@@ -122,33 +128,43 @@ def main(argv=None):
     if args.accounts:
         auths = _filter_accounts(auths, args.accounts, ap)
 
-    if args.ping:
-        report = ping(auths, config=cfg, log_path=cfg.keepalive_log)
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 1 if any(v == "expired" or v.startswith("error")
-                        for v in report.values()) else 0
+    # 通知是旁路：未配置通道时 enabled=False，全流程零副作用
+    notifier = Notifier.from_config(cfg)
+    try:
+        if args.ping:
+            report = ping(auths, config=cfg, log_path=cfg.keepalive_log,
+                          notifier=notifier)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 1 if any(v == "expired" or v.startswith("error")
+                            for v in report.values()) else 0
 
-    if args.verify_session:
-        report = verify_session(auths, config=cfg, log_path=cfg.keepalive_log)
-        # 成功账号回显凭据文件路径：确认「重新登录后导出的文件已可用」这一闭环
-        for auth in auths:
-            if report.get(auth["label"], "").startswith("authenticated"):
-                print("认证文件已可用: %s" % auth.get("_auth_file"),
-                      file=sys.stderr)
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 1 if any(not v.startswith("authenticated")
-                        for v in report.values()) else 0
+        if args.verify_session:
+            report = verify_session(auths, config=cfg,
+                                    log_path=cfg.keepalive_log,
+                                    notifier=notifier)
+            # 成功账号回显凭据文件路径：确认「重新登录后导出的文件已可用」
+            for auth in auths:
+                if report.get(auth["label"], "").startswith("authenticated"):
+                    print("认证文件已可用: %s" % auth.get("_auth_file"),
+                          file=sys.stderr)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 1 if any(not v.startswith("authenticated")
+                            for v in report.values()) else 0
 
-    if args.loop:
-        report = loop_run(auths, config=cfg, minutes=cfg.loop_minutes,
-                          interval=cfg.loop_interval, fire_at=cfg.fire_at,
-                          run_log=_run_log_name(cfg, "claim"))
-        any_error = _loop_has_error(report)
-    else:
-        report, any_error = single_run(
-            auths, config=cfg, run_log=_run_log_name(cfg, "claim-single"))
-    print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 1 if any_error else 0
+        if args.loop:
+            report = loop_run(auths, config=cfg, minutes=cfg.loop_minutes,
+                              interval=cfg.loop_interval, fire_at=cfg.fire_at,
+                              run_log=_run_log_name(cfg, "claim"),
+                              notifier=notifier)
+            any_error = _loop_has_error(report)
+        else:
+            report, any_error = single_run(
+                auths, config=cfg, run_log=_run_log_name(cfg, "claim-single"),
+                notifier=notifier)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 1 if any_error else 0
+    finally:
+        notifier.close()
 
 
 if __name__ == "__main__":

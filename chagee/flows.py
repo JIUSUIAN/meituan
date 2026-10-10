@@ -24,6 +24,7 @@ from .config import Config
 from .errors import (AUTH_EXPIRED_CODES, ApiError, ApiTransportError,
                     classify_grant_error)
 from .models import Coupon, GrantEvent
+from .notify import mask_label
 from .pacing import GrantPacing
 from .security import GLOBAL_SECRETS
 
@@ -77,7 +78,20 @@ def _write_keepalive(log_path, log_lines, secrets=None):
 # T02：健康检查（只读）与会话验证（有副作用）
 # ---------------------------------------------------------------------------
 
-def ping(auths, config=None, log_path=None):
+def _notify_health(notifier, kind, report,
+                   good=("reachable", "authenticated")):
+    """ping/verify 只在有异常账号时推送，正常情况不打扰。"""
+    if notifier is None or not report:
+        return
+    bad = {k: v for k, v in report.items() if v not in good}
+    if not bad:
+        return
+    lines = ["%s: %s" % (mask_label(k), str(v)[:120]) for k, v in bad.items()]
+    notifier.notify("health",
+                    "%s：存在异常账号\n%s" % (kind, "\n".join(lines)))
+
+
+def ping(auths, config=None, log_path=None, notifier=None):
     """只读健康检查：仅调用 info + grant-status 两个只读接口，绝不领取。
 
     每账号返回统一健康状态之一：
@@ -115,10 +129,11 @@ def ping(auths, config=None, log_path=None):
         log_lines.append("%s [%s] %s (%.2fs)" %
                          (beijing_ts(), label, report[label], time.time() - t0))
     _write_keepalive(log_path, log_lines)
+    _notify_health(notifier, "只读健康检查", report, good=("reachable",))
     return report
 
 
-def verify_session(auths, config=None, log_path=None):
+def verify_session(auths, config=None, log_path=None, notifier=None):
     """会话验证（有副作用！）：用探针券尝试一次领取来证明登录态。
 
     若当天探针券（满28减10）尚未领取，会实际领掉一张。
@@ -152,6 +167,7 @@ def verify_session(auths, config=None, log_path=None):
         log_lines.append("%s [%s] %s (%.2fs)" %
                          (beijing_ts(), label, report[label], time.time() - t0))
     _write_keepalive(log_path, log_lines)
+    _notify_health(notifier, "会话验证", report, good=("authenticated",))
     return report
 
 
@@ -198,7 +214,7 @@ def try_grant(client, brand_id, coupon, pacing=None, config=None):
 # 单次执行
 # ---------------------------------------------------------------------------
 
-def single_run(auths, config=None, run_log=None):
+def single_run(auths, config=None, run_log=None, notifier=None):
     """单次执行：每个账号尝试一次，返回 (报告, 是否有错误)。"""
     cfg = config or Config()
     with RunLogger(run_log) as logger:
@@ -210,6 +226,8 @@ def single_run(auths, config=None, run_log=None):
         except KeyboardInterrupt:
             log("收到中断信号，单次执行提前结束（已完成账号的结果保留）")
             any_error = True
+    if notifier is not None:
+        notifier.notify_report("result", report)
     return report, any_error
 
 
@@ -320,9 +338,10 @@ class LoopRunner:
     由 self.lock 保护；不再依赖模块级可变全局。"""
 
     def __init__(self, auths, config=None, minutes=10, interval=2.0,
-                 fire_at=None, run_log=None, logger=None):
+                 fire_at=None, run_log=None, logger=None, notifier=None):
         self.auths = auths
         self.cfg = config or Config()
+        self.notifier = notifier
         # 目标为空时每波都是 0 任务、_all_settled 永远不成立，会空转到超时；
         # 配置错误应当在启动时就报出来，而不是静默跑十分钟
         if not self.cfg.snipe_coupons:
@@ -560,6 +579,25 @@ class LoopRunner:
         except OSError as e:
             self.logger.log("事件明细写入失败: %s" % e)
 
+    def _notify(self, report, wave_count):
+        """把结果推给通知通道——旁路行为，任何失败都不影响报告返回。"""
+        if self.notifier is None:
+            return
+        extra = ["波次 %d, 请求 %d" % (wave_count, len(self.events)),
+                 "事件明细 %s" % (self.events_path or "未落盘")]
+        self.notifier.notify_report("result", report, extra_lines=extra)
+        expired = sorted({mask_label(label)
+                          for label, items in (report or {}).items()
+                          for item in items or []
+                          if item.get("status") == "auth_expired"})
+        if expired:
+            self.notifier.notify(
+                "auth_expired",
+                "账号 %s 的会话已失效（873）。\n"
+                "请重新登录 -> 扩展导出 cookie -> "
+                "tools/import_cookie_export.py --merge --label <该账号>，"
+                "再用 --verify-session 确认。" % "、".join(expired))
+
     def _finalize(self):
         """收尾：用 grant-status 补一次状态校验（直接用目标券，不再拉列表）。"""
         log = self.logger.log
@@ -631,7 +669,9 @@ class LoopRunner:
                 log("收到中断信号，跳过剩余波次，进入收尾统计与状态校验...")
             self._log_summary(wave_count)
             self._dump_events()
-            return self._finalize()
+            report = self._finalize()
+            self._notify(report, wave_count)
+            return report
         finally:
             for c in self.clients.values():
                 c.close()
@@ -639,8 +679,9 @@ class LoopRunner:
 
 
 def loop_run(auths, config=None, minutes=10, interval=2.0, fire_at=None,
-             run_log=None):
+             run_log=None, notifier=None):
     """循环抢券入口（薄封装，状态都在 LoopRunner 实例里）。"""
     runner = LoopRunner(auths, config=config, minutes=minutes,
-                        interval=interval, fire_at=fire_at, run_log=run_log)
+                        interval=interval, fire_at=fire_at, run_log=run_log,
+                        notifier=notifier)
     return runner.run()
