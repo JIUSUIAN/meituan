@@ -4,8 +4,8 @@
 多账号并发、整点定时开抢、限流退避、会话凭据自动跟随，并把结果输出成可管道解析的 JSON。
 
 - 语言/依赖：Python ≥ 3.9，`requests`（Windows 另需 `tzdata`；邮件走标准库 `smtplib`）
-- 版本：`1.16.0`（真源 `chagee/__init__.py:__version__`）
-- 测试：208 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
+- 版本：`1.17.0`（真源 `chagee/__init__.py:__version__`）
+- 测试：216 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
 - 节奏与参数以**实测成功日志**为准（2026-10-09 23:59 那次整点抢：4 张券全中、响应 1.78~3.17s）
 
 ---
@@ -80,7 +80,7 @@ pip install -e .                                  # 或 pip install -r requireme
 
 `notify` / `notify_mail` 可选：**账号级通知路由**，决定这个账号的领取详情
 （`account_result`）走哪条通道、发给谁。`targets` 缺省时沿用全局
-`notify_targets`，`to` 缺省时沿用全局 `email_to`；`notify_mail` 是「只换收件人」
+`notify_targets`，`to` 缺省时沿用全局 `notify_to_mails`；`notify_mail` 是「只换收件人」
 的简写。通道凭据（SMTP 授权码、webhook 地址等）仍然只放在全局配置里，
 账号条目只描述路由——这样凭据不会散落到多个文件，路由又能跟账号一起进
 gitignore 的凭据文件。详见第 8 节。它跟凭据同文件，因此同样不会进版本库。
@@ -268,7 +268,8 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
 | `feishu` | `feishu_webhook` | 自定义机器人 text |
 | `dingtalk` | `dingtalk_webhook`（+ 可选 `dingtalk_secret` 加签） | text + HMAC-SHA256 签名 |
 | `serverchan` | `serverchan_send_key` | Server酱 `SCTxxx.send` 表单 |
-| `email` | `email_smtp_host`（可带端口）+ `email_to`，鉴权用 `email_user`/`email_password` | 标准库 `smtplib`，465 SSL 或 587 STARTTLS |
+| `email` | `email_smtp_host`（可带端口）+ 收件人 `notify_to_mails`，鉴权用 `email_user`/`email_password` | 标准库 `smtplib`，465 SSL 或 587 STARTTLS |
+| `resend` | `resend_api_key` + `resend_from`（已验证域名下的地址）+ 收件人 `notify_to_mails` | `POST https://api.resend.com/emails` + `Bearer`，body `{from,to,subject,text}`，响应含 `id` 才算受理 |
 | `webhook` | `notify_webhook_url` | 通用 `POST {event, title, text}` |
 
 邮件通道举例（QQ/163 用授权码而不是登录密码）：
@@ -281,11 +282,11 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
   "email_user": "你的邮箱@qq.com",
   "email_password": "邮箱授权码",
   "email_from": "你的邮箱@qq.com",
-  "email_to": ["you@example.com"]
+  "notify_to_mails": ["you@example.com"]
 }
 ```
 
-收件人可以全局配 `email_to`，也可以写在每个账号的 `cookies.json` 条目里
+收件人全局配 `notify_to_mails`（邮件类通道共用：`email` 与 `resend`），也可以写在每个账号的 `cookies.json` 条目里
 （`notify_mail`，见 3.2）——后者只收自己账号那条 `account_result`。
 多个收件人逐个发。
 
@@ -312,7 +313,7 @@ chagee --notify-test      # 全成功退出码 0
   "email_smtp_host": "smtp.qq.com:465",
   "email_user": "你的邮箱@qq.com",
   "email_password": "授权码",
-  "email_to": ["默认收件人@example.com"]
+  "notify_to_mails": ["默认收件人@example.com"]
 }
 ```
 
@@ -327,7 +328,7 @@ chagee --notify-test      # 全成功退出码 0
 ]
 ```
 
-规则：`targets` 缺省 = 用全局 `notify_targets`；`to` 缺省 = 用全局 `email_to`
+规则：`targets` 缺省 = 用全局 `notify_targets`；`to` 缺省 = 用全局 `notify_to_mails`
 （只有邮件类通道用得上收件人）；`notify_mail` 等价于只填 `to`。
 `targets` 里写了不存在的通道名会记一行警告并跳过；`notify` 写成非对象同样
 警告后回落全局——**通知配置错误绝不会影响抢券**。`result` / `auth_expired` /
@@ -400,7 +401,7 @@ CHAGEE_LOOP_MINUTES=5 CHAGEE_FIRE_LEAD=0.3 chagee --loop --fire-at 10:00:00
 - 环境变量只能表达标量；`CHAGEE_FIXED_COUPONS` 这类嵌套结构会被明确拒绝并提示改配置文件。
 - **通知凭据别提交**：`claim.config.json` 里写 token 会被 gitignore 之外的方式泄露，
   推荐用环境变量注入：`CHAGEE_NOTIFY_TARGETS=telegram`、
-  `CHAGEE_TELEGRAM_BOT_TOKEN=...`、`CHAGEE_EMAIL_PASSWORD=...`（`email_to` 是 tuple，
+  `CHAGEE_TELEGRAM_BOT_TOKEN=...`、`CHAGEE_EMAIL_PASSWORD=...`、`CHAGEE_RESEND_API_KEY=...`（`notify_to_mails` 是 tuple，
   可用逗号分隔一次给多个收件人）。
 - 完整可调项见 `claim.config.example.json`（复制为 `claim.config.json` 生效），
   字段真源见 `chagee/config.py`。
@@ -445,6 +446,7 @@ JSESSIONID 的机会（本项目会自动跟随回写）。
 | `通知[x] telegram: 失败 缺少配置: telegram_chat_id` | 只报缺的字段名；把值补进配置或环境变量 |
 | `通知[x] dingtalk: 失败 通道返回失败 errcode=310000` | 钉钉机器人安全设置不匹配（加签没填 `dingtalk_secret`，或关键词/IP 段受限） |
 | `通知[x] email: 失败 ...` | QQ/163 要用**授权码**而不是登录密码；465 走 `email_use_ssl`、587 走 `email_use_tls` |
+| `通知[x] resend: 失败 HTTP 4xx` | `resend_api_key` 无效，或 `resend_from` 所在域名未在 Resend 验证 / 未配 DKIM+SPF；响应没有 `id` 一律判失败，不会把没受理当成功 |
 
 ---
 
@@ -465,7 +467,7 @@ chagee/
   notify.py              Notifier：Telegram/飞书/钉钉/Server酱/邮件/通用 webhook
   flows.py               ping / verify_session / single_run / LoopRunner（步骤方法化）
 tools/import_cookie_export.py  扩展导出 -> 认证文件（支持并入数组）
-tests/                   208 个 unittest（全部 mock）
+tests/                   216 个 unittest（全部 mock）
 .github/workflows/ci.yml 多版本 Python 测试 + compileall + 凭据入库守卫
 ```
 
@@ -503,6 +505,8 @@ python -m compileall -q chagee tests tools claim.py
 
 ## 14. 版本与演进
 
+`1.17.0` 新增 `resend` 通道（Resend API 发信，无需 SMTP），收件人字段统一为
+`notify_to_mails`（`email` 与 `resend` 共用，账号级 `to`/`notify_mail` 仍可覆盖）；
 `1.16.0` 账号级通知路由（账号条目 `notify`/`notify_mail` 决定详情走哪条通道、
 发给谁），`--notify-test` 按账号各发一条自检；
 `1.15.0` 移除 `temp_email` 通道（那套自建服务只配了收信、未配发信，实测被服务端拒绝）；
