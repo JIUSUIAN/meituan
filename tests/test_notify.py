@@ -4,6 +4,8 @@
 全部 mock（注入假 session / 假 SMTP），不发真实请求。
 运行：python -m unittest discover -s tests -t . -v
 """
+import contextlib
+import io
 import json
 import unittest
 from unittest import mock
@@ -12,6 +14,7 @@ import requests
 
 from chagee import flows
 from chagee.config import Config, load_config
+from chagee.models import Coupon
 from chagee.notify import (CHANNELS, Notifier, dingtalk_signed_url, mask_label)
 from chagee.security import GLOBAL_SECRETS
 
@@ -395,6 +398,75 @@ class _RecordingNotifier:
     def notify_report(self, event, report, extra_lines=()):
         self.events.append((event, report))
 
+    def notify_account(self, label, items, timings=None, extra_lines=()):
+        self.events.append(("account_result", label, items, timings))
+
+
+class PerAccountNotifyTest(unittest.TestCase):
+    """一账号一条：券名 + 状态 + 发送时刻/耗时 + 服务端最终状态。"""
+
+    ITEMS = [
+        {"coupon": "【5折外卖券】立减20", "status": "granted",
+         "detail": "{'winPrizeInfo': {'prize': 'ok'}}",
+         "grant_status": "GRANTED"},
+        {"coupon": "【5折外卖券】立减25", "status": "out_of_stock",
+         "detail": "code=60001: 已抢光"},
+    ]
+
+    def setUp(self):
+        GLOBAL_SECRETS.clear()
+        self.addCleanup(GLOBAL_SECRETS.clear)
+        self.session = FakeSession()
+        base = dict(notify_targets=("webhook",),
+                    notify_events=("result", "account_result", "auth_expired"))
+        self.notifier = Notifier(config=cfg_with(**base), session=self.session,
+                                 log=lambda m: None)
+
+    def _text(self):
+        return self.session.calls[-1]["json"]["text"]
+
+    def test_message_shape(self):
+        self.notifier.notify_account(
+            "17718937689", self.ITEMS,
+            timings={"【5折外卖券】立减20": ("23:59:59.70", 1.78)})
+        sent = self.session.calls[-1]["json"]
+        self.assertEqual("account_result", sent["event"])
+        text = sent["text"]
+        self.assertIn("177****89", text)          # label 掩码
+        self.assertNotIn("17718937689", text)
+        self.assertIn("立减20: granted（发送 23:59:59.70，耗时 1.78s）"
+                      " 服务端 GRANTED", text)
+        self.assertIn("立减25: out_of_stock", text)
+        self.assertIn("已抢光", text)
+        self.assertNotIn("winPrizeInfo", text)    # 成功不重复带奖品 JSON
+
+    def test_label_kept_when_masking_off(self):
+        base = dict(notify_targets=("webhook",), notify_mask_labels=False,
+                    notify_events=("account_result",))
+        notifier = Notifier(config=cfg_with(**base), session=self.session,
+                            log=lambda m: None)
+        notifier.notify_account("老号", [{"coupon": "券A", "status": "granted"}])
+        self.assertIn("老号", self._text())
+
+    def test_event_can_be_filtered_out(self):
+        base = dict(notify_targets=("webhook",), notify_events=("result",))
+        notifier = Notifier(config=cfg_with(**base), session=self.session,
+                            log=lambda m: None)
+        self.assertEqual([], notifier.notify_account("老号", self.ITEMS))
+        self.assertEqual([], self.session.calls)
+
+    def test_detail_secret_redacted(self):
+        GLOBAL_SECRETS.register("SECRETTOKENVALUE123")
+        self.notifier.notify_account(
+            "老号", [{"coupon": "券A", "status": "failed",
+                      "detail": "code=9: SECRETTOKENVALUE123 出错"}])
+        self.assertNotIn("SECRETTOKENVALUE123", self._text())
+        self.assertIn("***", self._text())
+
+    def test_no_items_says_no_result(self):
+        self.notifier.notify_account("老号", [])
+        self.assertIn("无结果", self._text())
+
 
 class FlowsWiringTest(unittest.TestCase):
     def setUp(self):
@@ -425,20 +497,68 @@ class FlowsWiringTest(unittest.TestCase):
         self.assertEqual(1, len(bad.events))
         self.assertEqual("health", bad.events[0][0])
 
-    def test_loop_notifies_result_and_auth_expired(self):
-        runner = flows.LoopRunner([{"label": "老号", "GL-XSRF-TOKEN": "t",
-                                    "GOD_UUID": "u", "device_id": "d",
-                                    "cookies": {}}], config=Config(),
-                                  minutes=0.01, interval=0.01)
+    def _runner(self, labels):
+        auths = [{"label": l, "GL-XSRF-TOKEN": "t", "GOD_UUID": "u",
+                  "device_id": "d", "cookies": {}} for l in labels]
+        runner = flows.LoopRunner(auths, config=Config(), minutes=0.01,
+                                  interval=0.01)
         self.addCleanup(lambda: [c.close() for c in runner.clients.values()])
+        return runner
+
+    def test_loop_notifies_result_per_account_and_auth_expired(self):
+        from chagee.models import GrantEvent
+        runner = self._runner(["老号"])
         notifier = _RecordingNotifier()
         runner.notifier = notifier
-        runner._notify({"老号": [{"status": "auth_expired"},
-                                {"status": "granted"}]}, wave_count=2)
+        runner.events.append(GrantEvent("2026-10-10 23:59:59.70", "老号",
+                                        "【5折外卖券】立减20", "granted", 1.78))
+        runner._notify({"老号": [{"coupon": "【5折外卖券】立减20",
+                                 "status": "auth_expired"},
+                                {"coupon": "【5折外卖券】立减25",
+                                 "status": "granted"}]}, wave_count=2)
         names = [e[0] for e in notifier.events]
-        self.assertEqual(["result", "auth_expired"], names)
-        self.assertIn("873", notifier.events[1][1])
-        self.assertIn("import_cookie_export", notifier.events[1][1])
+        self.assertEqual(["result", "account_result", "auth_expired"], names)
+        self.assertIn("873", notifier.events[-1][1])
+        self.assertIn("import_cookie_export", notifier.events[-1][1])
+        # 详情条带上这一账号的时刻/耗时映射
+        per_account = notifier.events[1]
+        self.assertEqual("老号", per_account[1])
+        self.assertEqual({"【5折外卖券】立减20": ("23:59:59.70", 1.78)},
+                         per_account[3])
+
+    def test_loop_sends_one_message_per_account(self):
+        runner = self._runner(["老号", "小号", "三号"])
+        notifier = _RecordingNotifier()
+        runner.notifier = notifier
+        runner._notify({"老号": [{"status": "granted"}],
+                        "小号": [{"status": "granted"}],
+                        "三号": [{"status": "out_of_stock"}]}, wave_count=1)
+        accounts = [e[1] for e in notifier.events if e[0] == "account_result"]
+        self.assertEqual(["老号", "小号", "三号"], accounts)
+        self.assertEqual(1, sum(1 for e in notifier.events
+                               if e[0] == "result"))
+
+    def test_single_run_notifies_per_account(self):
+        auth = {"label": "老号", "GL-XSRF-TOKEN": "t", "GOD_UUID": "u",
+                "device_id": "d", "cookies": {}}
+        notifier = _RecordingNotifier()
+        with mock.patch.object(flows, "ApiClient") as ac:
+            client = ac.return_value
+            client.__enter__ = lambda s: s
+            client.find_brand_coupons = lambda: (
+                {"brandId": "b1", "brandName": "霸王茶姬"},
+                [Coupon(coupon_id="c1", coupon_name="【5折外卖券】立减20",
+                        coupon_type="PHONE_REWARD")])
+            client.grant_status = lambda ids, timeout=None: {}
+            client.grant = lambda brand_id, coupon: {"winPrizeInfo": {"p": 1}}
+            client.secrets = GLOBAL_SECRETS
+            with contextlib.redirect_stderr(io.StringIO()):
+                report, any_error = flows.single_run([auth], notifier=notifier)
+        self.assertFalse(any_error)
+        self.assertEqual("granted", report["老号"][0]["status"])
+        self.assertEqual(["result", "account_result"],
+                         [e[0] for e in notifier.events])
+        self.assertEqual("老号", notifier.events[1][1])
 
 
 class NotifyConfigTest(unittest.TestCase):
