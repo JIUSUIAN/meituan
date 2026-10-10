@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""消息通知：Telegram / 飞书 / 钉钉 / Server酱 / 邮件 / 自建 cloudflare_temp_email / 通用 webhook。
+"""消息通知：Telegram / 飞书 / 钉钉 / Server酱 / 邮件 / 通用 webhook。
 
 三条边界：
 
@@ -29,8 +29,7 @@ import requests
 from .config import Config
 from .security import GLOBAL_SECRETS
 
-CHANNELS = ("telegram", "feishu", "dingtalk", "serverchan", "email",
-            "temp_email", "webhook")
+CHANNELS = ("telegram", "feishu", "dingtalk", "serverchan", "email", "webhook")
 
 # 每个通道必需的配置项（缺失时只报字段名，不报值）
 REQUIRED = {
@@ -39,7 +38,6 @@ REQUIRED = {
     "dingtalk": ("dingtalk_webhook",),
     "serverchan": ("serverchan_send_key",),
     "email": ("email_smtp_host", "email_to"),
-    "temp_email": ("temp_email_api_url", "temp_email_to_mails"),
     "webhook": ("notify_webhook_url",),
 }
 
@@ -49,11 +47,10 @@ SUCCESS_RULES = {
     "feishu": ("code", (0,)),
     "dingtalk": ("errcode", (0,)),
     "serverchan": ("code", (0, "0")),
-    "temp_email": ("status", ("ok",)),
 }
 
 # 可由单次调用覆盖收件人的通道：字段 -> 覆盖入口
-RECIPIENT_FIELDS = {"email": "email_to", "temp_email": "temp_email_to_mails"}
+RECIPIENT_FIELDS = {"email": "email_to"}
 
 EVENT_TITLES = {
     "result": "CHAGEE 抢券结果",
@@ -68,8 +65,7 @@ EVENT_TITLES = {
 _SECRET_FIELDS = ("telegram_bot_token", "telegram_chat_id", "feishu_webhook",
                   "dingtalk_webhook", "dingtalk_secret", "serverchan_send_key",
                   "notify_webhook_url", "email_password", "email_user",
-                  "email_from", "temp_email_admin_auth", "temp_email_jwt",
-                  "temp_email_from_mail")
+                  "email_from")
 
 
 def mask_label(label):
@@ -284,16 +280,14 @@ class Notifier:
                        data={"title": title, "desp": text})
         elif channel == "email":
             self._send_email(title, text, to_mails=to_mails)
-        elif channel == "temp_email":
-            self._send_temp_email(title, text, to_mails=to_mails)
         elif channel == "webhook":
             self._post(cfg.notify_webhook_url, None,
                        json={"event": event, "title": title, "text": text})
         else:
             raise ValueError("未知通知通道: %s" % channel)
 
-    def _post(self, url, channel, json=None, data=None, headers=None):
-        r = self.session.post(url, json=json, data=data, headers=headers,
+    def _post(self, url, channel, json=None, data=None):
+        r = self.session.post(url, json=json, data=data,
                               timeout=self.cfg.notify_timeout)
         if getattr(r, "status_code", 200) >= 400:
             raise RuntimeError("HTTP %s: %s"
@@ -350,54 +344,3 @@ class Notifier:
                 server.quit()
             except Exception:
                 pass
-
-    # -- cloudflare_temp_email 自建服务 -----------------------------------
-
-    def _temp_email_target(self):
-        """返回 (url, headers, 基础 body)：管理密码模式优先，其次地址 JWT。
-
-        管理密码走 POST {base}/admin/send_mail（必须给 from_mail）；
-        地址 JWT 走 POST {base}/api/send_mail（发件人就是该地址）。"""
-        cfg = self.cfg
-        base = (cfg.temp_email_api_url or "").rstrip("/")
-        if not base:
-            raise RuntimeError("缺少 temp_email_api_url")
-        who = cfg.temp_email_from_name or "chagee 抢券"
-        body = {"from_name": who, "to_name": who,
-                "subject": "", "content": "", "is_html": False}
-        if cfg.temp_email_admin_auth:
-            if not cfg.temp_email_from_mail:
-                raise RuntimeError("管理员模式需要 temp_email_from_mail")
-            body["from_mail"] = cfg.temp_email_from_mail
-            return (base + "/admin/send_mail",
-                    {"x-admin-auth": cfg.temp_email_admin_auth}, body)
-        if cfg.temp_email_jwt:
-            return (base + "/api/send_mail",
-                    {"Authorization": "Bearer " + cfg.temp_email_jwt}, body)
-        raise RuntimeError("需要 temp_email_admin_auth 或 temp_email_jwt")
-
-    def _send_temp_email(self, title, text, to_mails=None):
-        """通过自建 cloudflare_temp_email 服务发信；多个收件人就逐个发。"""
-        recipients = (tuple(to_mails or ())
-                      or tuple(self.cfg.temp_email_to_mails or ()))
-        if not recipients:
-            raise RuntimeError("缺少 temp_email_to_mails（且该账号没写 notify_mail）")
-        url, headers, base_body = self._temp_email_target()
-        for to in recipients:
-            body = dict(base_body)
-            body.update({"to_mail": to, "subject": title, "content": text})
-            self._post(url, "temp_email", json=body, headers=headers)
-
-    def probe_service(self):
-        """探自建服务连通性：GET {base}/health_check 应返回 200 "OK"。"""
-        base = (self.cfg.temp_email_api_url or "").rstrip("/")
-        if not base:
-            return False, "未配置 temp_email_api_url"
-        try:
-            r = self.session.get(base + "/health_check",
-                                 timeout=self.cfg.notify_timeout)
-        except Exception as e:
-            return False, self.secrets.redact(str(e))[:80]
-        text = self.secrets.redact(getattr(r, "text", ""))[:80]
-        ok = getattr(r, "status_code", 0) == 200
-        return ok, text

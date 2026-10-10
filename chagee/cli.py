@@ -80,8 +80,8 @@ def _filter_accounts(auths, spec, ap):
 
 
 def _collect_test_mails(cfg):
-    """测试消息的收件人：全局配置 + 各账号凭据条目里写的 notify_mail。"""
-    mails = list(cfg.temp_email_to_mails or ()) + list(cfg.email_to or ())
+    """测试消息的收件人：全局 email_to + 各账号凭据条目里写的 notify_mail。"""
+    mails = list(cfg.email_to or ())
     try:
         for auth in load_auths(cfg.auth_files, base_dir=DIR):
             for mail in (account_mails(auth) or ()):
@@ -93,7 +93,7 @@ def _collect_test_mails(cfg):
 
 
 def _notify_test(cfg, ap):
-    """按配置的通道发一条测试消息——验证 token/webhook/自建邮箱是否真能送达。"""
+    """按配置的通道发一条测试消息——验证 token/webhook/SMTP 是否真能送达。"""
     notifier = Notifier.from_config(cfg)
     if not notifier.enabled:
         notifier.close()
@@ -101,10 +101,6 @@ def _notify_test(cfg, ap):
                  "--no-notify）")
     to_mails = _collect_test_mails(cfg) or None
     try:
-        if "temp_email" in notifier.targets and cfg.temp_email_api_url:
-            ok, detail = notifier.probe_service()
-            print("health_check: %s %s" % ("OK" if ok else "失败", detail),
-                  file=sys.stderr)
         results = notifier.notify("test", "这是一条 chagee 通知测试消息。",
                                  force=True, to_mails=to_mails)
     finally:
