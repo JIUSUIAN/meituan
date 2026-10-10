@@ -7,6 +7,7 @@
 
 ```
 claim.py                 薄启动器（用法文档在此）
+pyproject.toml           包元数据 + 依赖 + console_scripts（chagee = chagee.cli:main）
 chagee/
   cli.py                 命令行入口：参数解析、配置装配、分发到 flows
   config.py              配置分层：dataclass 默认值 < claim.config.json < CHAGEE_* 环境变量 < CLI
@@ -18,14 +19,19 @@ chagee/
   pacing.py              RateLimiter + InflightGate（容量可动态调整，替代“换全局 Semaphore”）
   flows.py               业务流程：RunLogger、ping（只读）、verify_session（显式副作用）、
                          single_run、LoopRunner（原 200 行 loop_run 拆为步骤方法）
-test_claim_p0.py           P0 回归测试（33 个）
-test_claim_p1.py           P1 测试（24 个：闸门/配置分层/LoopRunner 冒烟/single_run/模型）
-test_cookie_rotation.py    Cookie 跟踪与归一化测试（20 个）
+tools/
+  import_cookie_export.py  浏览器 Cookie 导出文件 -> 认证文件（会话重建闭环）
+tests/
+  test_claim_p0.py         P0 回归测试（33 个）
+  test_claim_p1.py         P1 测试（26 个：闸门/配置分层/LoopRunner 冒烟/single_run/模型）
+  test_cookie_rotation.py  Cookie 跟踪与归一化测试（20 个）
+  test_review_batch.py     评审第 2 批测试（38 个：tmp 加固/退出码/CLI 校验/JSONL/导出工具）
+.github/workflows/ci.yml  CI：多版本 Python 跑全套 mock 测试 + 凭据入库守卫
 ```
 
 数据文件位置不变：`claim.config.json`、`cookies.json`、`cookies-new.json`
-仍在项目根目录（chagee/ 的上一级）。两种入口等价：
-`python claim.py ...` 与 `python -m chagee.cli ...`。
+仍在项目根目录（chagee/ 的上一级）。三种入口等价：
+`python claim.py ...`、`python -m chagee.cli ...`、`chagee ...`（`pip install -e .` 后）。
 
 ## P0 要点回顾
 
@@ -72,8 +78,8 @@ test_cookie_rotation.py    Cookie 跟踪与归一化测试（20 个）
 - Session 失效（873）仍走既有路径：标记 `auth_expired` → 停止依赖旧会话；
   重建会话需人工重新登录后由 load_auth/回写流程搬运新凭据，脚本不自动重登。
 
-测试：`test_cookie_rotation.py`（13 个）。全套：
-`python -m unittest test_claim_p0 test_claim_p1 test_cookie_rotation`（61 个）。
+测试：`tests/test_cookie_rotation.py`（20 个）。全套见「运行」一节的
+`python -m unittest discover -s tests -t .`（当前 117 个）。
 
 ## 评审遗留项收尾批次（P1.6）
 
@@ -88,7 +94,7 @@ test_cookie_rotation.py    Cookie 跟踪与归一化测试（20 个）
 - **忙等缩短**：`wait_until` 最后自旋从 100ms 降到 5ms，精度不变、CPU 更省。
 - **import 清理**：`subprocess/sys/datetime/zoneinfo/Counter` 等提至模块顶层。
 
-测试：全套 66 个（当时）。当前全套 79 个（P0 33 + P1 26 + cookie/rotation 20）。
+测试：全套 66 个（当时）。
 
 ## 领域模型层（P1.7）
 
@@ -116,25 +122,80 @@ test_cookie_rotation.py    Cookie 跟踪与归一化测试（20 个）
 - 轮换后 `auth["cookies"]` 与 store 同步并原子回写（行为同 P1.5，路径改为
   经 store）。
 
-测试：全套 77 个（P0 33 + P1 24 + rotation/cookies 20）。
+测试：全套 77 个（当时）。
+
+## 评审第 2 批（1.9.0）
+
+针对整体复审意见的修复与增强：
+
+- **凭据中转文件加固**：`save_auth` 中转文件名带 pid（`cookies.json.1234.tmp`），
+  多进程并发保存互不覆盖；写入失败即清理，绝不留带凭据的半成品；`load_auth`
+  顺手清掉 60 秒前的孤儿 `.tmp`（在途写入不误删）；`.gitignore` 补 `*.tmp`、
+  `*.jsonl`、打包产物。
+- **退出码不再骗人**：loop 模式退出码从报告推导（任一账号 `auth_expired`/`error`
+  即返回 1），cron 等自动化层能真正感知失败。
+- **CLI 校验前置**：`--fire-at` 格式与取值范围在 argparse 层校验（支持
+  `HH:MM[:SS[.毫秒]]`），不再等到 `wait_until` 抛 traceback；抢券目标为空
+  （关键词写错）时启动即报错，不会空转十分钟；配置里显式写了却不存在的认证
+  文件会警告一行——静默跳过会让人以为在双账号并发。
+- **探针券单一真源**：删除 `flows.PING_PROBE_ID` 硬编码，改由
+  `Config.probe_coupon` 从 `fixed_coupons` 推导（券 ID 只在一处定义）。
+- **`--accounts` 子集过滤**：按 label 或认证文件名（含/不含扩展名）匹配，
+  验证新导出的 `cookies-new.json` 时不必改配置。
+- **事件明细 JSONL**：收尾把 `GrantEvent` 追加写 `<run_log>.jsonl`，人读日志之外
+  多一份机器可读副本，供事后复盘发送时刻/耗时分布（不含任何凭据）。
+- **`--verify-session` 闭环回显**：验证通过的账号回显认证文件路径（stderr）。
+- **环境变量覆盖守卫**：`CHAGEE_FIXED_COUPONS` 这类嵌套结构字段明确拒绝并给
+  可读报错，不再让 `Config(**values)` 炸出难懂的 TypeError。
+- **开火等待精度**：`wait_until` 的 sleep 段与最后 5ms 忙等改用 `perf_counter`
+  单调钟锚定（Windows 上 `time.time` 分辨率约 15ms，会整体偏移一个 tick）。
+- **工程化**：`pyproject.toml`（依赖单一真源 + `chagee` 控制台脚本，`claim.py`
+  保留为兼容 shim）；测试归位 `tests/`；GitHub Actions CI 跑多版本 Python 全套
+  mock 测试，并带「凭据文件绝不入库」守卫。
+- **会话重建工具**：`tools/import_cookie_export.py` 把浏览器扩展导出的 cookie
+  数组转成认证文件并做完整性校验（缺字段只报字段名）。JSESSIONID 是 HttpOnly，
+  页面 JS/书签栏脚本读不到，必须走扩展导出——工具只做格式转换，不生成任何值。
+
+测试：全套 117 个（P0 33 + P1 26 + rotation/cookies 20 + 评审批次 38）。
 
 ## 运行
 
 ```bash
-# Windows（本目录 .venv 已含 requests、tzdata）
-.venv\Scripts\python.exe -m unittest test_claim_p0 test_claim_p1 -v
+# 安装（依赖单一真源在 pyproject.toml）
+pip install -e .            # 或 pip install -r requirements.txt
+
+# 全套测试（全部 mock，不访问真实接口）
+python -m unittest discover -s tests -t . -v
+
+# 日常
+chagee --ping                                    # 只读健康检查（cron 保活）
+chagee --verify-session --accounts cookies-new   # 验证新导出的凭据（有副作用）
+chagee --loop --fire-at 14:00:00.000             # 定时开抢
+chagee --loop 2>/dev/null > result.json          # stdout 只有 JSON 报告
+
+# 会话重建（873 之后）：浏览器扩展导出 cookie -> 认证文件
+python tools/import_cookie_export.py export.json --domain 163.com
+
+# Windows 本目录 .venv
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
 .venv\Scripts\python.exe claim.py --ping
 
-# Linux 原环境
-python3 claim.py --loop --fire-at 10:00:00.00
 # 可选：CHAGEE_LOOP_MINUTES=5 python3 claim.py --loop
+```
+
+保活建议（cron / Windows 任务计划）：
+
+```cron
+# 每 10 分钟只读探活；退出码 1 = 登录态失效或网络异常，可接告警
+*/10 * * * * cd /path/to/meituan && python3 claim.py --ping >> keepalive.cron.log 2>&1 || notify-send "CHAGEE 会话异常"
 ```
 
 注意：
 - Windows 控制台为 GBK 时中文日志显示乱码，属终端编码问题，可设
   `PYTHONIOENCODING=utf-8`；日志文件本身是 UTF-8。
-- `zoneinfo` 在 Windows 需要 `tzdata` 包（.venv 已装，或 `pip install -r requirements.txt`）。
+- `zoneinfo` 在 Windows 需要 `tzdata` 包（已作为平台条件依赖写入 pyproject）。
 - `timedatectl` 时钟校验为 Linux 专用，其他平台记录“跳过”。
+- Windows 上认证文件没有 chmod 600 等价收紧，依赖所在目录的 NTFS ACL。
 
 ## Plan 验收对照（2026-10-10 终审）
 
