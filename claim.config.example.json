@@ -36,6 +36,11 @@
     "email_to": ["收件邮箱1", "收件邮箱2"],
     "email_use_ssl": true,
     "email_use_tls": false,
-    "email_subject_prefix": "[抢券] "
+    "email_subject_prefix": "[抢券] ",
+    "temp_email_api_url": "https://temp-mail.你的域名.com（cloudflare_temp_email 自建）",
+    "temp_email_admin_auth": "管理密码（走 /admin/send_mail + x-admin-auth）",
+    "temp_email_jwt": "或者地址 JWT（走 /api/send_mail + Bearer，二选一）",
+    "temp_email_from_mail": "notice@你的域名.com（须是该服务里已存在的地址）",
+    "temp_email_to_mails": ["指定通知邮箱"]
   }
 }

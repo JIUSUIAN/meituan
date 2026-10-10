@@ -4,8 +4,8 @@
 多账号并发、整点定时开抢、限流退避、会话凭据自动跟随，并把结果输出成可管道解析的 JSON。
 
 - 语言/依赖：Python ≥ 3.9，`requests`（Windows 另需 `tzdata`；邮件走标准库 `smtplib`）
-- 版本：`1.12.0`（真源 `chagee/__init__.py:__version__`）
-- 测试：187 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
+- 版本：`1.13.0`（真源 `chagee/__init__.py:__version__`）
+- 测试：201 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
 - 节奏与参数以**实测成功日志**为准（2026-10-09 23:59 那次整点抢：4 张券全中、响应 1.78~3.17s）
 
 ---
@@ -258,7 +258,32 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
 | `dingtalk` | `dingtalk_webhook`（+ 可选 `dingtalk_secret` 加签） | text + HMAC-SHA256 签名 |
 | `serverchan` | `serverchan_send_key` | Server酱 `SCTxxx.send` 表单 |
 | `email` | `email_smtp_host`（可带端口）+ `email_to`，鉴权用 `email_user`/`email_password` | 标准库 `smtplib`，465 SSL 或 587 STARTTLS |
+| `temp_email` | `temp_email_api_url` + `temp_email_to_mails` + 鉴权二选一（`temp_email_admin_auth` / `temp_email_jwt`），管理员模式另需 `temp_email_from_mail` | 自建 [cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)：`POST /admin/send_mail`（`x-admin-auth` 头）或 `POST /api/send_mail`（`Bearer JWT`） |
 | `webhook` | `notify_webhook_url` | 通用 `POST {event, title, text}` |
+
+自建 [cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)
+的接法（它跑在 Cloudflare Workers 上，收信靠 Email Routing，发信需要为该域名开启
+Email Sending 绑定）：
+
+```json
+{
+  "notify_targets": ["temp_email"],
+  "temp_email_api_url": "https://temp-mail.你的域名.com",
+  "temp_email_admin_auth": "管理密码（后台设置里的那个）",
+  "temp_email_from_mail": "notice@你的域名.com",
+  "temp_email_to_mails": ["you@example.com"]
+}
+```
+
+`temp_email_from_mail` 必须是该服务里已存在的地址；若不想用管理密码，就把该地址
+登录得到的 JWT 填进 `temp_email_jwt`（走 `/api/send_mail`，发件人即该地址，
+不需要 `from_mail`）。多个收件人逐个发。`is_html` 固定 false，正文是纯文本。
+
+配好后先自检连通与送达：
+
+```bash
+chagee --notify-test      # 先 GET /health_check，再按通道发一条测试消息
+```
 
 ```json
 {
@@ -372,6 +397,8 @@ JSESSIONID 的机会（本项目会自动跟随回写）。
 | `通知[x] telegram: 失败 缺少配置: telegram_chat_id` | 只报缺的字段名；把值补进配置或环境变量 |
 | `通知[x] dingtalk: 失败 通道返回失败 errcode=310000` | 钉钉机器人安全设置不匹配（加签没填 `dingtalk_secret`，或关键词/IP 段受限） |
 | `通知[x] email: 失败 ...` | QQ/163 要用**授权码**而不是登录密码；465 走 `email_use_ssl`、587 走 `email_use_tls` |
+| `通知[x] temp_email: 失败 HTTP 400 ...` | 该域名没开 Email Sending 绑定、`temp_email_from_mail` 不是服务里已存在的地址，或管理密码错（先跑 `chagee --notify-test` 看 health_check） |
+| `通知[x] temp_email: 失败 需要 temp_email_admin_auth 或 temp_email_jwt` | 两种鉴权都没填；填管理密码（配 `from_mail`）或地址 JWT（不配 `from_mail`） |
 
 ---
 
@@ -392,7 +419,7 @@ chagee/
   notify.py              Notifier：Telegram/飞书/钉钉/Server酱/邮件/通用 webhook
   flows.py               ping / verify_session / single_run / LoopRunner（步骤方法化）
 tools/import_cookie_export.py  扩展导出 -> 认证文件（支持并入数组）
-tests/                   187 个 unittest（全部 mock）
+tests/                   201 个 unittest（全部 mock）
 .github/workflows/ci.yml 多版本 Python 测试 + compileall + 凭据入库守卫
 ```
 
@@ -430,6 +457,8 @@ python -m compileall -q chagee tests tools claim.py
 
 ## 14. 版本与演进
 
+`1.13.0` 新增 `temp_email` 通道（自建 cloudflare_temp_email 发信：管理密码或地址 JWT
+两种鉴权）与 `chagee --notify-test` 自检；
 `1.12.0` 通知支持单账号领取详情逐条推送（`account_result` 事件，含发送时刻/耗时/服务端状态）；
 `1.11.0` 消息通知模块（Telegram/飞书/钉钉/Server酱/邮件/通用 webhook）与四模式接入；
 `1.10.0` 多账号单文件与按条目回写、自适应并发、`send_ts` 精度、`--fire-lead`；
