@@ -16,8 +16,9 @@ import requests
 from chagee import flows
 from chagee.config import Config, load_config
 from chagee.models import Coupon
-from chagee.notify import (CHANNELS, REQUIRED, Notifier, dingtalk_signed_url,
-                           mask_label)
+from chagee.notify import (CHANNELS, REQUIRED, Notifier, account_mails,
+                           dingtalk_signed_url, mask_label,
+                           register_config_secrets)
 from chagee.security import GLOBAL_SECRETS
 
 WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/abc123def456789"
@@ -411,8 +412,9 @@ class _RecordingNotifier:
     def notify_report(self, event, report, extra_lines=()):
         self.events.append((event, report))
 
-    def notify_account(self, label, items, timings=None, extra_lines=()):
-        self.events.append(("account_result", label, items, timings))
+    def notify_account(self, label, items, timings=None, extra_lines=(),
+                       to_mails=None):
+        self.events.append(("account_result", label, items, timings, to_mails))
 
 
 class PerAccountNotifyTest(unittest.TestCase):
@@ -553,7 +555,8 @@ class FlowsWiringTest(unittest.TestCase):
 
     def test_single_run_notifies_per_account(self):
         auth = {"label": "老号", "GL-XSRF-TOKEN": "t", "GOD_UUID": "u",
-                "device_id": "d", "cookies": {}}
+                "device_id": "d", "cookies": {},
+                "notify_mail": "boss@example.com"}
         notifier = _RecordingNotifier()
         with mock.patch.object(flows, "ApiClient") as ac:
             client = ac.return_value
@@ -572,6 +575,21 @@ class FlowsWiringTest(unittest.TestCase):
         self.assertEqual(["result", "account_result"],
                          [e[0] for e in notifier.events])
         self.assertEqual("老号", notifier.events[1][1])
+        # 账号详情只发给该账号凭据里写的 notify_mail
+        self.assertEqual(("boss@example.com",), notifier.events[1][4])
+
+    def test_loop_routes_account_mail_from_credential_entry(self):
+        auth = {"label": "老号", "GL-XSRF-TOKEN": "t", "GOD_UUID": "u",
+                "device_id": "d", "cookies": {}, "notify_mail": "a@x.com"}
+        runner = flows.LoopRunner([auth], config=Config(), minutes=0.01,
+                                  interval=0.01)
+        self.addCleanup(lambda: [c.close() for c in runner.clients.values()])
+        notifier = _RecordingNotifier()
+        runner.notifier = notifier
+        runner._notify({"老号": [{"status": "granted"}]}, wave_count=1)
+        accounts = [e for e in notifier.events if e[0] == "account_result"]
+        self.assertEqual(("a@x.com",), accounts[0][4])
+        self.assertIsNone(runner._account_mails("没这个账号"))
 
 
 class NotifyConfigTest(unittest.TestCase):
@@ -749,22 +767,25 @@ class CliNotifyTest(unittest.TestCase):
             def probe_service(self):
                 return True, "OK"
 
-            def notify(self, event, text, title=None, force=False):
-                sent.append((event, force))
+            def notify(self, event, text, title=None, force=False,
+                       to_mails=None):
+                sent.append((event, force, to_mails))
                 return [("temp_email", True, "已发送")]
 
             def close(self):
                 pass
 
         cfg = Config(notify_targets=("temp_email",),
-                    temp_email_api_url="https://temp-mail.example.com")
-        with mock.patch.object(cli, "Notifier", Stub):
+                     temp_email_api_url="https://temp-mail.example.com",
+                     temp_email_to_mails=("you@example.com",))
+        with mock.patch.object(cli, "Notifier", Stub), \
+                mock.patch.object(cli, "load_auths", return_value=[]):
             out = io.StringIO()
             with contextlib.redirect_stdout(out), \
                     contextlib.redirect_stderr(io.StringIO()):
                 code = cli._notify_test(cfg, argparse.ArgumentParser())
         self.assertEqual(0, code)
-        self.assertEqual([("test", True)], sent)
+        self.assertEqual([("test", True, ("you@example.com",))], sent)
         self.assertIn("temp_email", out.getvalue())
 
     def test_notify_test_errors_when_no_channel(self):
@@ -784,6 +805,121 @@ class CliNotifyTest(unittest.TestCase):
         with mock.patch.object(cli, "Notifier", Disabled):
             with self.assertRaises(SystemExit):
                 cli._notify_test(Config(), argparse.ArgumentParser())
+
+
+class PerAccountRecipientTest(unittest.TestCase):
+    """收件邮箱可以写在凭据条目里（notify_mail），一账号一份收件箱。"""
+
+    def setUp(self):
+        GLOBAL_SECRETS.clear()
+        self.addCleanup(GLOBAL_SECRETS.clear)
+
+    def test_account_mails_helper(self):
+        self.assertEqual(("a@x.com",), account_mails({"notify_mail": "a@x.com"}))
+        self.assertEqual(("a@x.com", "b@x.com"),
+                         account_mails({"notify_mail": ["a@x.com", "b@x.com"]}))
+        self.assertEqual(("a@x.com",), account_mails({"notify_mailbox": "a@x.com"}))
+        self.assertIsNone(account_mails({"label": "无邮箱"}))
+        self.assertIsNone(account_mails({"notify_mail": ""}))
+
+    def test_override_used_and_global_not_required(self):
+        session = FakeSession()
+        cfg = cfg_with(notify_targets=("temp_email",),
+                       temp_email_api_url="https://temp-mail.example.com",
+                       temp_email_admin_auth="ADMINPASS123SECRET",
+                       temp_email_from_mail="notice@temp-mail.example.com",
+                       temp_email_to_mails=(),          # 全局留空
+                       notify_events=("account_result",))
+        notifier = Notifier(config=cfg, session=session, log=lambda m: None)
+        results = notifier.notify_account("老号", [{"coupon": "券A",
+                                                    "status": "granted"}],
+                                          to_mails=("mine@example.com",))
+        self.assertTrue(results[0][1], results[0])
+        self.assertEqual("mine@example.com",
+                         session.calls[0]["json"]["to_mail"])
+
+    def test_no_recipient_anywhere_reports_clearly(self):
+        session = FakeSession()
+        cfg = cfg_with(notify_targets=("temp_email",),
+                       temp_email_api_url="https://temp-mail.example.com",
+                       temp_email_admin_auth="ADMINPASS123SECRET",
+                       temp_email_from_mail="notice@temp-mail.example.com",
+                       temp_email_to_mails=(),
+                       notify_events=("account_result",))
+        notifier = Notifier(config=cfg, session=session, log=lambda m: None)
+        _, ok, detail = notifier.notify_account("老号", [])[0]
+        self.assertFalse(ok)
+        self.assertIn("temp_email_to_mails", detail)
+        self.assertEqual([], self.session.calls if hasattr(self, "session")
+                         else session.calls)
+
+    def test_email_channel_also_honors_override(self):
+        log = []
+        smtp_cfg = dict(notify_targets=("email",), email_smtp_host="smtp.qq.com",
+                        email_smtp_port=465, email_use_ssl=True,
+                        email_to=(), email_user="s@qq.com",
+                        email_password="AUTH", email_from="s@qq.com",
+                        notify_events=("account_result",))
+
+        def make(host, port, use_ssl):
+            return RecordingSMTP(log, host, port, use_ssl)
+
+        notifier = Notifier(config=cfg_with(**smtp_cfg), session=FakeSession(),
+                            smtp_factory=make, log=lambda m: None)
+        notifier.notify_account("老号", [{"coupon": "券", "status": "granted"}],
+                                to_mails=("mine@example.com",))
+        sent = [entry for entry in log if isinstance(entry, tuple)
+                and entry[0] == "send"]
+        self.assertEqual(1, len(sent))
+
+
+class RegisterSecretsTimingTest(unittest.TestCase):
+    def test_register_happens_at_module_level_helper(self):
+        GLOBAL_SECRETS.clear()
+        cfg = Config(temp_email_admin_auth="ADMINPASS123SECRET",
+                     feishu_webhook="https://x/?token=WEBHOOKTOKEN123")
+        self.assertNotIn("***", GLOBAL_SECRETS.redact("ADMINPASS123SECRET"))
+        register_config_secrets(cfg)
+        self.assertIn("***", GLOBAL_SECRETS.redact("ADMINPASS123SECRET"))
+        self.assertIn("***", GLOBAL_SECRETS.redact("WEBHOOKTOKEN123"))
+
+    def test_cli_registers_secrets_before_notifier_exists(self):
+        """构造 Notifier 之前就登记：否则更早的失败路径可能把管理密码打出来。"""
+        from chagee import cli
+        cfg = Config(notify_targets=("temp_email",),
+                     temp_email_admin_auth="ADMINPASS123SECRET")
+
+        class Boom:
+            @classmethod
+            def from_config(cls, c):
+                raise RuntimeError("密码泄漏风险: ADMINPASS123SECRET")
+
+        with mock.patch.object(cli, "load_config", return_value=cfg), \
+                mock.patch.object(cli, "Notifier", Boom):
+            with self.assertRaises(RuntimeError) as cm:
+                cli.main(["--notify-test"])
+        self.assertIn("***", GLOBAL_SECRETS.redact(str(cm.exception)))
+        GLOBAL_SECRETS.clear()
+
+
+    def test_collect_test_mails_merges_global_and_per_account(self):
+        from chagee import cli
+        cfg = Config(temp_email_to_mails=("global@example.com",), email_to=())
+        with mock.patch.object(cli, "load_auths", return_value=[
+                {"label": "老号", "notify_mail": "a@x.com"},
+                {"label": "小号", "notify_mail": ["b@x.com", "c@x.com"]},
+                {"label": "没邮箱"}]):
+            self.assertEqual(
+                ("global@example.com", "a@x.com", "b@x.com", "c@x.com"),
+                cli._collect_test_mails(cfg))
+
+    def test_collect_test_mails_survives_missing_credentials(self):
+        from chagee import cli
+        with mock.patch.object(cli, "load_auths",
+                               side_effect=FileNotFoundError("没有凭据文件")):
+            self.assertEqual(("g@example.com",),
+                             cli._collect_test_mails(
+                                 Config(temp_email_to_mails=("g@example.com",))))
 
 
 if __name__ == "__main__":
