@@ -4,8 +4,8 @@
 多账号并发、整点定时开抢、限流退避、会话凭据自动跟随，并把结果输出成可管道解析的 JSON。
 
 - 语言/依赖：Python ≥ 3.9，`requests`（Windows 另需 `tzdata`；邮件走标准库 `smtplib`）
-- 版本：`1.15.0`（真源 `chagee/__init__.py:__version__`）
-- 测试：197 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
+- 版本：`1.16.0`（真源 `chagee/__init__.py:__version__`）
+- 测试：208 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
 - 节奏与参数以**实测成功日志**为准（2026-10-09 23:59 那次整点抢：4 张券全中、响应 1.78~3.17s）
 
 ---
@@ -70,13 +70,20 @@ pip install -e .                                  # 或 pip install -r requireme
 [
   { "label": "老号", "GL-XSRF-TOKEN": "...", "GOD_UUID": "...",
     "device_id": "...", "cookies": { "JSESSIONID": "..." },
-    "notify_mail": "该账号通知收件邮箱" },
-  { "label": "小号", "...": "..." }
+    "notify": { "targets": ["email"], "to": ["老板邮箱@example.com"] } },
+  { "label": "小号", "...": "...",
+    "notify": { "targets": ["dingtalk"] } },
+  { "label": "三号", "...": "...",
+    "notify_mail": "共享收件箱@example.com" }
 ]
 ```
 
-`notify_mail` 可选：**每个账号自带通知收件人**（字符串或列表），该账号的领取详情
-（`account_result`）只发到这些邮箱；没写就回落到全局 `email_to`。它跟凭据同文件，因此同样不会进版本库。
+`notify` / `notify_mail` 可选：**账号级通知路由**，决定这个账号的领取详情
+（`account_result`）走哪条通道、发给谁。`targets` 缺省时沿用全局
+`notify_targets`，`to` 缺省时沿用全局 `email_to`；`notify_mail` 是「只换收件人」
+的简写。通道凭据（SMTP 授权码、webhook 地址等）仍然只放在全局配置里，
+账号条目只描述路由——这样凭据不会散落到多个文件，路由又能跟账号一起进
+gitignore 的凭据文件。详见第 8 节。它跟凭据同文件，因此同样不会进版本库。
 
 加载规则（`security.load_auths`）：
 
@@ -286,12 +293,45 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
 （示例文件 `claim.config.example.json` 才入库），也可以用环境变量注入，例如
 `CHAGEE_EMAIL_PASSWORD`。两者都会被登记进脱敏表，日志与报错里只显示 `***`。
 
-自检命令按通道强制发一条测试消息（绕过 `notify_events` 过滤），收件人取
-「全局 `email_to` + 各账号 `notify_mail`」的并集：
+自检命令按通道强制发测试消息（绕过 `notify_events` 过滤）：全局通道发一条，
+每个带 `notify` / `notify_mail` 的账号**按自己的路由各发一条**，结果按
+「全局 + 账号名」分组打到 stdout，谁的通道没配通一眼可见：
 
 ```bash
-chagee --notify-test      # 逐通道结果打到 stdout，全成功退出码 0
+chagee --notify-test      # 全成功退出码 0
 ```
+
+### 8.1 账号级路由（一账号一通道一收件人）
+
+通道凭据统一放在全局配置，路由写在账号条目里，两者解耦：
+
+```json
+// claim.config.json —— 凭据与全局事件去处
+{
+  "notify_targets": ["email"],
+  "email_smtp_host": "smtp.qq.com:465",
+  "email_user": "你的邮箱@qq.com",
+  "email_password": "授权码",
+  "email_to": ["默认收件人@example.com"]
+}
+```
+
+```json
+// cookies.json —— 每个账号自己决定详情发给谁、走哪条通道
+[
+  { "label": "老号", "...": "...",
+    "notify": { "targets": ["email"], "to": ["a@x.com"] } },
+  { "label": "小号", "...": "...",
+    "notify": { "targets": ["dingtalk"] } },
+  { "label": "三号", "...": "...", "notify_mail": "c@x.com" }
+]
+```
+
+规则：`targets` 缺省 = 用全局 `notify_targets`；`to` 缺省 = 用全局 `email_to`
+（只有邮件类通道用得上收件人）；`notify_mail` 等价于只填 `to`。
+`targets` 里写了不存在的通道名会记一行警告并跳过；`notify` 写成非对象同样
+警告后回落全局——**通知配置错误绝不会影响抢券**。`result` / `auth_expired` /
+`health` 这三类全局事件不受账号路由影响，始终发往 `notify_targets`。
 
 ```json
 {
@@ -309,7 +349,7 @@ chagee --notify-test      # 逐通道结果打到 stdout，全成功退出码 0
 | 事件 | 触发点 | 内容 |
 |---|---|---|
 | `result` | `--loop` 收尾、单次执行结束 | 汇总一条：状态分布 + 每账号结果 + 波次/请求数 + 事件明细路径 |
-| `account_result` | 同上，**每个账号一条** | 该账号的领取详情：每张券一行（券名、状态、发送时刻、耗时、服务端最终状态、失败原因）；收件人优先用该账号凭据条目里的 `notify_mail` |
+| `account_result` | 同上，**每个账号一条** | 该账号的领取详情：每张券一行（券名、状态、发送时刻、耗时、服务端最终状态、失败原因）；收件人与通道优先用该账号条目里的 `notify` / `notify_mail` |
 | `auth_expired` | 报告里出现 873 | 哪些账号会话失效，以及「重新登录 → 导出 → `--merge` → `--verify-session`」的恢复步骤 |
 | `health` | `--ping` / `--verify-session` **有异常账号时** | 异常账号与状态；全部正常时不打扰 |
 
@@ -425,7 +465,7 @@ chagee/
   notify.py              Notifier：Telegram/飞书/钉钉/Server酱/邮件/通用 webhook
   flows.py               ping / verify_session / single_run / LoopRunner（步骤方法化）
 tools/import_cookie_export.py  扩展导出 -> 认证文件（支持并入数组）
-tests/                   197 个 unittest（全部 mock）
+tests/                   208 个 unittest（全部 mock）
 .github/workflows/ci.yml 多版本 Python 测试 + compileall + 凭据入库守卫
 ```
 
@@ -463,6 +503,8 @@ python -m compileall -q chagee tests tools claim.py
 
 ## 14. 版本与演进
 
+`1.16.0` 账号级通知路由（账号条目 `notify`/`notify_mail` 决定详情走哪条通道、
+发给谁），`--notify-test` 按账号各发一条自检；
 `1.15.0` 移除 `temp_email` 通道（那套自建服务只配了收信、未配发信，实测被服务端拒绝）；
 `1.14.0` 收件人可写在账号凭据条目里（`notify_mail`，一账号一份收件箱），
 并把 `claim.config.json` 加入 gitignore、通知凭据在配置加载后立刻登记脱敏；
