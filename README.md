@@ -3,9 +3,9 @@
 直调接口领取「大神会员 partner-perks」页面的霸王茶姬超级券：复刻页面的请求签名，
 多账号并发、整点定时开抢、限流退避、会话凭据自动跟随，并把结果输出成可管道解析的 JSON。
 
-- 语言/依赖：Python ≥ 3.9，`requests`（Windows 另需 `tzdata`）
-- 版本：`1.10.0`（真源 `chagee/__init__.py:__version__`）
-- 测试：148 个，全部 mock，不访问真实第三方接口
+- 语言/依赖：Python ≥ 3.9，`requests`（Windows 另需 `tzdata`；邮件走标准库 `smtplib`）
+- 版本：`1.11.0`（真源 `chagee/__init__.py:__version__`）
+- 测试：180 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
 - 节奏与参数以**实测成功日志**为准（2026-10-09 23:59 那次整点抢：4 张券全中、响应 1.78~3.17s）
 
 ---
@@ -247,7 +247,60 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
 
 ---
 
-## 8. 配置
+## 8. 消息通知
+
+配置里填了 `notify_targets` 才启用；通道可选：
+
+| 通道 | 需要的配置 | 载荷 |
+|---|---|---|
+| `telegram` | `telegram_bot_token` + `telegram_chat_id` | Bot API `sendMessage` |
+| `feishu` | `feishu_webhook` | 自定义机器人 text |
+| `dingtalk` | `dingtalk_webhook`（+ 可选 `dingtalk_secret` 加签） | text + HMAC-SHA256 签名 |
+| `serverchan` | `serverchan_send_key` | Server酱 `SCTxxx.send` 表单 |
+| `email` | `email_smtp_host`（可带端口）+ `email_to`，鉴权用 `email_user`/`email_password` | 标准库 `smtplib`，465 SSL 或 587 STARTTLS |
+| `webhook` | `notify_webhook_url` | 通用 `POST {event, title, text}` |
+
+```json
+{
+  "notify_targets": ["telegram", "feishu"],
+  "notify_events": ["result", "auth_expired", "health"],
+  "notify_mask_labels": true,
+  "telegram_bot_token": "123456789:AA...",
+  "telegram_chat_id": "我的 chat id",
+  "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/..."
+}
+```
+
+**什么时候发**（`notify_events` 过滤，默认只发这三类，避免高频打扰）：
+
+| 事件 | 触发点 | 内容 |
+|---|---|---|
+| `result` | `--loop` 收尾、单次执行结束 | 状态分布 + 每账号结果 + 波次/请求数 + 事件明细路径 |
+| `auth_expired` | 报告里出现 873 | 哪些账号会话失效，以及「重新登录 → 导出 → `--merge` → `--verify-session`」的恢复步骤 |
+| `health` | `--ping` / `--verify-session` **有异常账号时** | 异常账号与状态；全部正常时不打扰 |
+
+三条实现边界：
+
+- **旁路失败不影响抢券**：任何通道异常都被吞掉，只在 stderr 记一行
+  `通知[result] telegram: 失败 ...`；HTTP 200 但业务失败（`ok:false` /
+  `errcode!=0` / `code!=0`）也会判失败，不会把没送达当成功。
+- **通知凭据同等保密**：bot token、webhook URL（含 query 里的 token）、sendkey、
+  加签 secret、SMTP 密码一律登记进脱敏表，日志与异常里只会出现 `***`。
+- **默认掩码账号标识**：`notify_mask_labels=true` 时把 label 里的长数字
+  （多为手机号）掩成 `177****89` 再推给第三方；`email_subject_prefix` 只作用于邮件标题。
+
+```bash
+chagee --loop --no-notify      # 本次运行不推送（cron 调试用）
+chagee --ping --notify         # 强制打开（仍要求配置了通道）
+CHAGEE_NOTIFY_TARGETS=telegram,feishu chagee --loop
+```
+
+测试时可以自问一句「真发出去了吗」：模块用假 session / 假 SMTP 覆盖了每个通道的
+URL 与载荷形状，`Notifier.targets` 为空时 `enabled=False`，一次网络调用都不会发生。
+
+---
+
+## 9. 配置
 
 优先级：`Config` 默认值 < `claim.config.json` < `CHAGEE_<字段名大写>` 环境变量 < CLI。
 
@@ -259,12 +312,16 @@ CHAGEE_LOOP_MINUTES=5 CHAGEE_FIRE_LEAD=0.3 chagee --loop --fire-at 10:00:00
 - 配置文件键名必须是 `Config` 字段名，未知键直接报错（防手滑拼错）；
   下划线开头的键视为注释忽略；JSON 数组会自动转成 tuple 字段。
 - 环境变量只能表达标量；`CHAGEE_FIXED_COUPONS` 这类嵌套结构会被明确拒绝并提示改配置文件。
+- **通知凭据别提交**：`claim.config.json` 里写 token 会被 gitignore 之外的方式泄露，
+  推荐用环境变量注入：`CHAGEE_NOTIFY_TARGETS=telegram`、
+  `CHAGEE_TELEGRAM_BOT_TOKEN=...`、`CHAGEE_EMAIL_PASSWORD=...`（`email_to` 是 tuple，
+  可用逗号分隔一次给多个收件人）。
 - 完整可调项见 `claim.config.example.json`（复制为 `claim.config.json` 生效），
   字段真源见 `chagee/config.py`。
 
 ---
 
-## 9. 保活与调度
+## 10. 保活与调度
 
 会话靠「被访问」续命，定时打一次只读请求即可延长有效期，同时给服务端一次换发
 JSESSIONID 的机会（本项目会自动跟随回写）。
@@ -278,9 +335,12 @@ JSESSIONID 的机会（本项目会自动跟随回写）。
 操作填 `C:\...\meituan\.venv\Scripts\chagee.exe --ping`。间隔务必小于服务端 session
 空闲超时。
 
+配好通知通道后就不用自己写告警脚本了：`--ping`/`--verify-session` 发现有异常账号
+会直接推 `health` 事件（全部正常时不发），cron 行里的 `|| notify-send` 可以省掉。
+
 ---
 
-## 10. 故障排查
+## 11. 故障排查
 
 | 现象 | 原因与处理 |
 |---|---|
@@ -295,10 +355,14 @@ JSESSIONID 的机会（本项目会自动跟随回写）。
 | Windows 中文日志乱码 | 控制台是 GBK，设 `PYTHONIOENCODING=utf-8`；日志文件本身是 UTF-8 |
 | zoneinfo 报找不到 `Asia/Shanghai`（Windows） | 缺 `tzdata` 包：`pip install -r requirements.txt` |
 | 收尾 `[x] 收尾校验失败` | 报告仍给出领取尝试结果，只是缺 `grant_status`；多为收尾时刻网络抖动 |
+| 一条通知都没发 | `notify_targets` 为空即整体禁用（`enabled=False`）；或事件不在 `notify_events` 里；或用了 `--no-notify` |
+| `通知[x] telegram: 失败 缺少配置: telegram_chat_id` | 只报缺的字段名；把值补进配置或环境变量 |
+| `通知[x] dingtalk: 失败 通道返回失败 errcode=310000` | 钉钉机器人安全设置不匹配（加签没填 `dingtalk_secret`，或关键词/IP 段受限） |
+| `通知[x] email: 失败 ...` | QQ/163 要用**授权码**而不是登录密码；465 走 `email_use_ssl`、587 走 `email_use_tls` |
 
 ---
 
-## 11. 开发
+## 12. 开发
 
 ```
 claim.py                 薄启动器（用法摘要）
@@ -312,9 +376,10 @@ chagee/
   models.py              Coupon / GrantEvent（API 边界即转模型，raw 透传）
   api_client.py          签名、POST、错误分层、JSESSIONID 跟随
   pacing.py              RateLimiter + InflightGate（容量可运行时调整）
+  notify.py              Notifier：Telegram/飞书/钉钉/Server酱/邮件/通用 webhook
   flows.py               ping / verify_session / single_run / LoopRunner（步骤方法化）
 tools/import_cookie_export.py  扩展导出 -> 认证文件（支持并入数组）
-tests/                   148 个 unittest（全部 mock）
+tests/                   180 个 unittest（全部 mock）
 .github/workflows/ci.yml 多版本 Python 测试 + compileall + 凭据入库守卫
 ```
 
@@ -332,10 +397,13 @@ python -m compileall -q chagee tests tools claim.py
 5. 多账号单文件的回写必须按条目更新，不得整体覆盖。
 6. 测试一律 mock，禁止访问真实第三方接口。
 7. 节奏参数以实测为依据，调整前先拿 JSONL 事件数据说话。
+8. 通知是**旁路**：任何通道异常都不许冒泡影响抢券主流程；通知凭据（token、
+   webhook、sendkey、SMTP 密码）与业务凭据同等脱敏；「HTTP 200 但业务失败」
+   必须判为失败。
 
 ---
 
-## 12. 边界与免责
+## 13. 边界与免责
 
 - 只在**你自己的账号**上使用，并遵守网易大神的服务条款与频率约束；节奏参数
   刻意保守（单波 4~6 请求、命中限流退避 60s），不要改成高频压测形态。
@@ -343,9 +411,13 @@ python -m compileall -q chagee tests tools claim.py
   help 与文档已明示。
 - 接口是逆向复刻的私有接口，随时可能变更；签名或字段漂移时先看 `--ping` 是否
   `reachable`，再对比页面请求头。
+- 开启通知会把「哪些账号、领到了什么、什么时候」推给第三方服务。默认已掩掉
+  label 中的手机号等长数字；若你希望连账号标识也不外泄，用「老号/小号」这类
+  中性 label（`notify_mask_labels` 只影响通知，不影响本地日志与报告）。
 
-## 13. 版本与演进
+## 14. 版本与演进
 
+`1.11.0` 消息通知模块（Telegram/飞书/钉钉/Server酱/邮件/通用 webhook）与四模式接入；
 `1.10.0` 多账号单文件与按条目回写、自适应并发、`send_ts` 精度、`--fire-lead`；
 `1.9.0` 凭据 `.tmp` 加固、退出码、CLI 前置校验、探针券单一真源、JSONL、pyproject+CI；
 `1.8.0` 及更早：P0（脱敏/只读 ping/结构化错误）→ P1（模块拆分、消除全局状态、

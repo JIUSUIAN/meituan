@@ -14,5 +14,27 @@
   "fire_lead": 0.3,
   "_fire_lead说明": "开火提前量秒数：整点抢实测响应 1.8~3.2s，提前 0.3s 发出",
   "session_cookie_names": ["JSESSIONID"],
-  "persist_rotated_cookies": true
+  "persist_rotated_cookies": true,
+  "notify_targets": [],
+  "notify_events": ["result", "auth_expired", "health"],
+  "notify_mask_labels": true,
+  "_通知说明": "notify_targets 填通道名才会推送，可选 telegram / feishu / dingtalk / serverchan / email / webhook。下面的 token 属凭据：别提交进仓库，或用 CHAGEE_* 环境变量注入",
+  "_通知示例": {
+    "notify_targets": ["telegram", "feishu"],
+    "telegram_bot_token": "123456789:AA...（BotFather 发的 token）",
+    "telegram_chat_id": "我的 chat id",
+    "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx",
+    "dingtalk_webhook": "https://oapi.dingtalk.com/robot/send?access_token=xxxx",
+    "dingtalk_secret": "SEC...（机器人选「加签」时填，留空则不签名）",
+    "serverchan_send_key": "SCT...（Server酱 SendKey）",
+    "notify_webhook_url": "https://example.com/hook（收到 POST {event,title,text}）",
+    "email_smtp_host": "smtp.qq.com:465",
+    "email_user": "发件邮箱",
+    "email_password": "邮箱授权码/应用专用密码（不是登录密码）",
+    "email_from": "发件邮箱",
+    "email_to": ["收件邮箱1", "收件邮箱2"],
+    "email_use_ssl": true,
+    "email_use_tls": false,
+    "email_subject_prefix": "[抢券] "
+  }
 }
