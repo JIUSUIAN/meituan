@@ -88,7 +88,7 @@ test_cookie_rotation.py    Cookie 跟踪与归一化测试（20 个）
 - **忙等缩短**：`wait_until` 最后自旋从 100ms 降到 5ms，精度不变、CPU 更省。
 - **import 清理**：`subprocess/sys/datetime/zoneinfo/Counter` 等提至模块顶层。
 
-测试：全套 66 个（`test_claim_p0` 33 + `test_claim_p1` 20 + `test_cookie_rotation` 13）。
+测试：全套 66 个（当时）。当前全套 79 个（P0 33 + P1 26 + cookie/rotation 20）。
 
 ## 领域模型层（P1.7）
 
@@ -133,5 +133,22 @@ python3 claim.py --loop --fire-at 10:00:00.00
 注意：
 - Windows 控制台为 GBK 时中文日志显示乱码，属终端编码问题，可设
   `PYTHONIOENCODING=utf-8`；日志文件本身是 UTF-8。
-- `zoneinfo` 在 Windows 需要 `tzdata` 包（.venv 已装）。
+- `zoneinfo` 在 Windows 需要 `tzdata` 包（.venv 已装，或 `pip install -r requirements.txt`）。
 - `timedatectl` 时钟校验为 Linux 专用，其他平台记录“跳过”。
+
+## Plan 验收对照（2026-10-10 终审）
+
+T01 认证与日志安全：凭据不入库（.gitignore）✔ / 缺字段、非法 JSON 安全报错 ✔ /
+stdout、日志、异常均脱敏 ✔（含 wait_until 提示语死角修复）—— 7 项测试。
+T02 --ping 语义：不进领取路径（URL 级断言）✔ / 网络异常明确 error ✔ /
+不谎报 authenticated ✔ / help-doc-常量一致 ✔ —— 7 项测试。
+T03 错误体系：测试矩阵 7/7 ✔（transport/http/business/unknown/parse/脱敏/
+verify_status 失败与空可区分），业务码零字符串猜测。
+P1 四目标：API Client 拆分 ✔ / 全局可变状态清零（Gate/Pacing/LoopRunner 实例化）✔ /
+巨型函数拆分（LoopRunner 步骤方法 + RunLogger）✔ / 配置分层（config 四级 + 示例文件）✔。
+Git：本目录已 `git init`，按 plan 精神分 2 个提交（代码 / 测试；4 段粒度无法在
+合并后的最终树上忠实重放，已在提交信息注明）。
+明确不做：启动时交叉校验固定券 ID（与第一波零等待冲突，由波后增量刷新+失效停止覆盖）；
+自动重登（失效走人工登录 + load_auth 搬运）。
+日常保活建议：cron 每 10~15 分钟 `claim.py --ping`（间隔务必小于服务端 session
+空闲超时；JSESSIONID 轮换会自动跟随回写）。
