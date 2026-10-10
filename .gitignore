@@ -1,0 +1,7 @@
+# 凭据文件绝不入库；若曾提交过，视为已泄露并重新获取
+cookies.json
+cookies-new.json
+*.log
+.env
+.venv/
+__pycache__/

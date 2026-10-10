@@ -1,0 +1,3 @@
+# 运行依赖（Linux 自带 IANA 时区，无需 tzdata）
+requests>=2.28
+tzdata; sys_platform == "win32"
