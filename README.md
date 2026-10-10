@@ -4,8 +4,8 @@
 多账号并发、整点定时开抢、限流退避、会话凭据自动跟随，并把结果输出成可管道解析的 JSON。
 
 - 语言/依赖：Python ≥ 3.9，`requests`（Windows 另需 `tzdata`；邮件走标准库 `smtplib`）
-- 版本：`1.13.0`（真源 `chagee/__init__.py:__version__`）
-- 测试：201 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
+- 版本：`1.14.0`（真源 `chagee/__init__.py:__version__`）
+- 测试：210 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
 - 节奏与参数以**实测成功日志**为准（2026-10-09 23:59 那次整点抢：4 张券全中、响应 1.78~3.17s）
 
 ---
@@ -69,10 +69,15 @@ pip install -e .                                  # 或 pip install -r requireme
 ```json
 [
   { "label": "老号", "GL-XSRF-TOKEN": "...", "GOD_UUID": "...",
-    "device_id": "...", "cookies": { "JSESSIONID": "..." } },
+    "device_id": "...", "cookies": { "JSESSIONID": "..." },
+    "notify_mail": "该账号通知收件邮箱" },
   { "label": "小号", "...": "..." }
 ]
 ```
+
+`notify_mail` 可选：**每个账号自带通知收件人**（字符串或列表），该账号的领取详情
+（`account_result`）只发到这些邮箱；没写就回落到全局 `temp_email_to_mails` /
+`email_to`。它跟凭据同文件，因此同样不会进版本库。
 
 加载规则（`security.load_auths`）：
 
@@ -278,8 +283,15 @@ Email Sending 绑定）：
 `temp_email_from_mail` 必须是该服务里已存在的地址；若不想用管理密码，就把该地址
 登录得到的 JWT 填进 `temp_email_jwt`（走 `/api/send_mail`，发件人即该地址，
 不需要 `from_mail`）。多个收件人逐个发。`is_html` 固定 false，正文是纯文本。
+收件人可全局配 `temp_email_to_mails`，也可写在各账号 `cookies.json` 条目的
+`notify_mail` 里（后者只收自己账号的那条详情）。
 
-配好后先自检连通与送达：
+凭据管理密码/token 属敏感值：`claim.config.json` 已加入 `.gitignore`（示例文件
+`claim.config.example.json` 才入库），也可以用环境变量 `CHAGEE_TEMP_EMAIL_ADMIN_AUTH`
+注入。两者都会被登记进脱敏表，任何日志与报错里只会显示 `***`。
+
+自检命令会先探 `health_check`，再按通道强制发一条测试消息，收件人取
+「全局 `temp_email_to_mails` + 各账号 `notify_mail`」的并集：
 
 ```bash
 chagee --notify-test      # 先 GET /health_check，再按通道发一条测试消息
@@ -301,7 +313,7 @@ chagee --notify-test      # 先 GET /health_check，再按通道发一条测试�
 | 事件 | 触发点 | 内容 |
 |---|---|---|
 | `result` | `--loop` 收尾、单次执行结束 | 汇总一条：状态分布 + 每账号结果 + 波次/请求数 + 事件明细路径 |
-| `account_result` | 同上，**每个账号一条** | 该账号的领取详情：每张券一行（券名、状态、发送时刻、耗时、服务端最终状态、失败原因） |
+| `account_result` | 同上，**每个账号一条** | 该账号的领取详情：每张券一行（券名、状态、发送时刻、耗时、服务端最终状态、失败原因）；收件人优先用该账号凭据条目里的 `notify_mail` |
 | `auth_expired` | 报告里出现 873 | 哪些账号会话失效，以及「重新登录 → 导出 → `--merge` → `--verify-session`」的恢复步骤 |
 | `health` | `--ping` / `--verify-session` **有异常账号时** | 异常账号与状态；全部正常时不打扰 |
 
@@ -419,7 +431,7 @@ chagee/
   notify.py              Notifier：Telegram/飞书/钉钉/Server酱/邮件/通用 webhook
   flows.py               ping / verify_session / single_run / LoopRunner（步骤方法化）
 tools/import_cookie_export.py  扩展导出 -> 认证文件（支持并入数组）
-tests/                   201 个 unittest（全部 mock）
+tests/                   210 个 unittest（全部 mock）
 .github/workflows/ci.yml 多版本 Python 测试 + compileall + 凭据入库守卫
 ```
 
@@ -457,6 +469,8 @@ python -m compileall -q chagee tests tools claim.py
 
 ## 14. 版本与演进
 
+`1.14.0` 收件人可写在账号凭据条目里（`notify_mail`，一账号一份收件箱），
+并把 `claim.config.json` 加入 gitignore、通知凭据在配置加载后立刻登记脱敏；
 `1.13.0` 新增 `temp_email` 通道（自建 cloudflare_temp_email 发信：管理密码或地址 JWT
 两种鉴权）与 `chagee --notify-test` 自检；
 `1.12.0` 通知支持单账号领取详情逐条推送（`account_result` 事件，含发送时刻/耗时/服务端状态）；
