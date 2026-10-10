@@ -218,7 +218,7 @@ class NotifyGatingTest(unittest.TestCase):
     def test_all_channels_covered_by_required_map(self):
         self.assertEqual(set(CHANNELS),
                          {"telegram", "feishu", "dingtalk", "serverchan",
-                          "email", "webhook"})
+                          "email", "resend", "webhook"})
         self.assertEqual(set(CHANNELS), set(REQUIRED))
 
 
@@ -309,7 +309,7 @@ class EmailChannelTest(unittest.TestCase):
             email_smtp_host="smtp.qq.com", email_smtp_port=465,
             email_use_ssl=True, email_user="sender@qq.com",
             email_password="AUTHCODE777SECRET",
-            email_from="sender@qq.com", email_to=("me@example.com",),
+            email_from="sender@qq.com", notify_to_mails=("me@example.com",),
             email_subject_prefix="[抢券] ",
         )
 
@@ -350,12 +350,12 @@ class EmailChannelTest(unittest.TestCase):
         self.assertNotIn("AUTHCODE777SECRET", "\n".join(lines))
 
     def test_missing_recipient_reports_field(self):
-        notifier = Notifier(config=cfg_with(**dict(self.smtp_cfg, email_to=())),
+        notifier = Notifier(config=cfg_with(**dict(self.smtp_cfg, notify_to_mails=())),
                             session=FakeSession(),
                             smtp_factory=self._factory(), log=lambda m: None)
         _, ok, detail = notifier.notify("result", "x")[0]
         self.assertFalse(ok)
-        self.assertIn("email_to", detail)
+        self.assertIn("notify_to_mails", detail)
 
 
 class NotifyReportTest(unittest.TestCase):
@@ -397,6 +397,11 @@ class NotifyReportTest(unittest.TestCase):
     def test_mask_label_helper(self):
         self.assertEqual("177****89", mask_label("17718937689"))
         self.assertEqual("老号", mask_label("老号"))
+
+    def test_already_masked_label_is_left_alone(self):
+        """用户自己打过码的 label 不再二次掩码，否则账号认不出来。"""
+        self.assertEqual("177****7689", mask_label("177****7689"))
+        self.assertEqual("老号*1", mask_label("老号*1"))
 
 
 class _RecordingNotifier:
@@ -690,7 +695,7 @@ class CliNotifyTest(unittest.TestCase):
         return code, sent, out.getvalue()
 
     def test_global_send_uses_configured_recipients(self):
-        cfg = Config(notify_targets=("email",), email_to=("you@example.com",))
+        cfg = Config(notify_targets=("email",), notify_to_mails=("you@example.com",))
         code, sent, _ = self._run(cfg, accounts=[])
         self.assertEqual(0, code)
         self.assertEqual([("test", True, ("you@example.com",), None)],
@@ -698,7 +703,7 @@ class CliNotifyTest(unittest.TestCase):
                           for s in sent])
 
     def test_each_routed_account_gets_its_own_send(self):
-        cfg = Config(notify_targets=("email",), email_to=("you@example.com",))
+        cfg = Config(notify_targets=("email",), notify_to_mails=("you@example.com",))
         accounts = [
             {"label": "老号", "notify": {"targets": ["email"],
                                         "to": ["a@x.com"]}},
@@ -716,14 +721,14 @@ class CliNotifyTest(unittest.TestCase):
         self.assertEqual(0, code)
 
     def test_failure_makes_exit_code_one(self):
-        cfg = Config(notify_targets=("email",), email_to=("you@example.com",))
+        cfg = Config(notify_targets=("email",), notify_to_mails=("you@example.com",))
         code, _, _ = self._run(cfg, [], results=[("email", False, "HTTP 500")])
         self.assertEqual(1, code)
 
     def test_only_account_routing_still_sends(self):
         """全局没配通道但账号自带路由：路由本身就是发送意图，照样自检。"""
         accounts = [{"label": "老号", "notify_mail": "a@x.com"}]
-        code, sent, _ = self._run(Config(notify_targets=(), email_to=()),
+        code, sent, _ = self._run(Config(notify_targets=(), notify_to_mails=()),
                                   accounts, enabled=False)
         self.assertEqual(1, len(sent))
         self.assertEqual(("a@x.com",), sent[0]["to_mails"])
@@ -731,7 +736,7 @@ class CliNotifyTest(unittest.TestCase):
 
     def test_notify_test_errors_when_nothing_configurable(self):
         with self.assertRaises(SystemExit):
-            self._run(Config(notify_targets=(), email_to=()), accounts=[],
+            self._run(Config(notify_targets=(), notify_to_mails=()), accounts=[],
                       enabled=False)
 
     def test_notify_test_errors_when_no_channel(self):
@@ -768,10 +773,10 @@ class PerAccountRecipientTest(unittest.TestCase):
         self.assertIsNone(account_mails({"label": "无邮箱"}))
         self.assertIsNone(account_mails({"notify_mail": ""}))
 
-    def _email_notifier(self, email_to, log):
+    def _email_notifier(self, notify_to_mails, log):
         cfg = cfg_with(notify_targets=("email",),
                        email_smtp_host="smtp.qq.com", email_smtp_port=465,
-                       email_use_ssl=True, email_to=email_to,
+                       email_use_ssl=True, notify_to_mails=notify_to_mails,
                        email_user="s@qq.com", email_password="AUTH123SECRET",
                        email_from="s@qq.com",
                        notify_events=("account_result",))
@@ -780,7 +785,7 @@ class PerAccountRecipientTest(unittest.TestCase):
                         log=lambda m: None)
 
     def test_override_used_when_global_empty(self):
-        """全局 email_to 留空也能发：收件人来自该账号的 notify_mail 覆盖。"""
+        """全局 notify_to_mails 留空也能发：收件人来自该账号的 notify_mail 覆盖。"""
         log = []
         notifier = self._email_notifier((), log)
         results = notifier.notify_account("老号", [{"coupon": "券A",
@@ -795,7 +800,7 @@ class PerAccountRecipientTest(unittest.TestCase):
         notifier = self._email_notifier((), log)
         _, ok, detail = notifier.notify_account("老号", [])[0]
         self.assertFalse(ok)
-        self.assertIn("email_to", detail)          # 只报字段名
+        self.assertIn("notify_to_mails", detail)          # 只报字段名
         self.assertNotIn("AUTH123SECRET", detail)
         self.assertEqual([], [e for e in log if isinstance(e, tuple)
                               and e[0] == "send"])
@@ -903,6 +908,88 @@ class AccountRoutingTest(unittest.TestCase):
         self.assertEqual([], results)
         self.assertTrue(any("无法识别" in l for l in lines))
         self.assertEqual([], session.calls)
+
+
+class ResendChannelTest(unittest.TestCase):
+    """Resend API：POST https://api.resend.com/emails + Bearer key。"""
+
+    BASE_CFG = dict(notify_targets=("resend",),
+                    resend_api_key="re_SECRETKEY123456",
+                    resend_from="no-reply@email.troea.com",
+                    resend_from_name="chagee 抢券",
+                    notify_to_mails=("lastrui@outlook.com",))
+
+    def setUp(self):
+        GLOBAL_SECRETS.clear()
+        self.addCleanup(GLOBAL_SECRETS.clear)
+        self.lines = []
+        self.session = FakeSession(resp=FakeResp(200, {"id": "email-1"}))
+
+    def _notifier(self, resp=None, **over):
+        base = dict(self.BASE_CFG)
+        base.update(over)
+        if resp is not None:
+            self.session = FakeSession(resp=resp)
+        return Notifier(config=cfg_with(**base), session=self.session,
+                        log=self.lines.append)
+
+    def test_request_shape(self):
+        notifier = self._notifier()
+        results = notifier.notify("result", "正文")
+        self.assertTrue(results[0][1], results[0])
+        call = self.session.calls[0]
+        self.assertEqual("https://api.resend.com/emails", call["url"])
+        self.assertEqual({"Authorization": "Bearer re_SECRETKEY123456"},
+                         call["headers"])
+        body = call["json"]
+        self.assertEqual("chagee 抢券 <no-reply@email.troea.com>", body["from"])
+        self.assertEqual(["lastrui@outlook.com"], body["to"])
+        self.assertEqual("正文", body["text"])
+        self.assertIn("CHAGEE 抢券结果", body["subject"])
+
+    def test_from_with_display_name_kept_as_is(self):
+        notifier = self._notifier(resend_from="已带名字 <a@x.com>")
+        notifier.notify("result", "x")
+        self.assertEqual("已带名字 <a@x.com>",
+                         self.session.calls[0]["json"]["from"])
+
+    def test_account_recipients_override_global(self):
+        notifier = self._notifier(notify_events=("account_result",))
+        notifier.notify_account("老号", [{"coupon": "券", "status": "granted"}],
+                                to_mails=("only@x.com",))
+        self.assertEqual(["only@x.com"], self.session.calls[0]["json"]["to"])
+
+    def test_missing_id_counts_as_failure(self):
+        """HTTP 200 但响应里没有 id —— 不能把没受理当成功。"""
+        notifier = self._notifier(resp=FakeResp(200, {"name": "missing_api_key"}))
+        _, ok, detail = notifier.notify("result", "x")[0]
+        self.assertFalse(ok)
+        self.assertIn("未返回消息 id", detail)
+
+    def test_http_401_fails_and_key_stays_masked(self):
+        notifier = self._notifier(resp=FakeResp(
+            401, text={"name": "invalid_api_key",
+                       "message": "re_SECRETKEY123456 无效"}))
+        _, ok, _ = notifier.notify("result", "x")[0]
+        self.assertFalse(ok)
+        text = "".join(self.lines)
+        self.assertIn("HTTP 401", text)
+        self.assertNotIn("re_SECRETKEY123456", text)
+        self.assertIn("***", text)
+
+    def test_missing_api_key_reports_field_name(self):
+        notifier = self._notifier(resend_api_key="")
+        _, ok, detail = notifier.notify("result", "x")[0]
+        self.assertFalse(ok)
+        self.assertIn("resend_api_key", detail)
+        self.assertNotIn("re_SECRETKEY123456", detail)
+        self.assertEqual([], self.session.calls)
+
+    def test_no_recipient_anywhere(self):
+        notifier = self._notifier(notify_to_mails=())
+        _, ok, detail = notifier.notify("result", "x")[0]
+        self.assertFalse(ok)
+        self.assertIn("notify_to_mails", detail)
 
 
 if __name__ == "__main__":
