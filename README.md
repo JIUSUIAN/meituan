@@ -1,10 +1,11 @@
-# 网易大神 · 霸王茶姬优惠券自动领取（chagee）
+# 网易大神 · 美团外卖优惠券自动领取（meituan）
 
-直调接口领取「大神会员 partner-perks」页面的霸王茶姬超级券：复刻页面的请求签名，
+直调接口领取「大神会员 partner-perks」页面的美团外卖券（当前活动商家：霸王茶姬）：
+复刻页面的请求签名，
 多账号并发、整点定时开抢、限流退避、会话凭据自动跟随，并把结果输出成可管道解析的 JSON。
 
 - 语言/依赖：Python ≥ 3.9，`requests`（Windows 另需 `tzdata`；邮件走标准库 `smtplib`）
-- 版本：`1.17.0`（真源 `chagee/__init__.py:__version__`）
+- 版本：`1.18.0`（真源 `meituan/__init__.py:__version__`）
 - 测试：216 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
 - 节奏与参数以**实测成功日志**为准（2026-10-09 23:59 那次整点抢：4 张券全中、响应 1.78~3.17s）
 
@@ -12,7 +13,7 @@
 
 ## 1. 工作原理
 
-页面 JS 用 axios 带一组 `GL-*` 头访问接口，本项目在 `chagee/api_client.py` 里等价复刻：
+页面 JS 用 axios 带一组 `GL-*` 头访问接口，本项目在 `meituan/api_client.py` 里等价复刻：
 
 | 接口 | 方法/体 | 用途 |
 |---|---|---|
@@ -43,13 +44,13 @@ python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activa
 pip install -e .                                  # 或 pip install -r requirements.txt
 ```
 
-三种等价入口：`chagee ...`（控制台脚本）、`python claim.py ...`、`python -m chagee.cli ...`。
+三种等价入口：`meituan ...`（控制台脚本）、`python claim.py ...`、`python -m meituan.cli ...`。
 
 ---
 
 ## 3. 凭据准备
 
-凭据文件放在**项目根目录**（`chagee/` 的上一级），文件名由 `auth_files` 配置，
+凭据文件放在**项目根目录**（`meituan/` 的上一级），文件名由 `auth_files` 配置，
 默认 `("cookies.json", "cookies-new.json")`——存在哪个就用哪个，都不存在则报错退出。
 
 ### 3.1 单账号（对象格式）
@@ -126,13 +127,13 @@ python tools/import_cookie_export.py export.json --domain 163.com \
 ## 4. 命令与四种运行模式
 
 ```bash
-chagee                              # 单次执行（默认）
-chagee --loop [--minutes 10] [--interval 2.0]
-chagee --loop --fire-at 23:59:59.70 --fire-lead 0.3
-chagee --ping                       # 只读健康检查
-chagee --verify-session             # 会话验证（有副作用）
-chagee --loop --accounts 小号        # 只跑指定账号（label 或文件名，逗号分隔）
-chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stderr
+meituan                              # 单次执行（默认）
+meituan --loop [--minutes 10] [--interval 2.0]
+meituan --loop --fire-at 23:59:59.70 --fire-lead 0.3
+meituan --ping                       # 只读健康检查
+meituan --verify-session             # 会话验证（有副作用）
+meituan --loop --accounts 小号        # 只跑指定账号（label 或文件名，逗号分隔）
+meituan --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stderr
 ```
 
 | 模式 | 做什么 | 副作用 | 报告状态 | 退出码 |
@@ -165,7 +166,7 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
      新出现的 `snipe_keyword` 券，不删已有目标；
    - 每波任务 = 各账号未 settled 的目标券，优先券排前；
    - 第一波打完自动切「安全模式」（`sustained_gap` / `sustained_inflight`），
-     压测时 `CHAGEE_BURST_TEST=1` 跳过切换；
+     压测时 `MEITUAN_BURST_TEST=1` 跳过切换；
    - 所有目标都有结论 → 提前结束；否则 sleep `interval` 进下一波。
 6. 收尾：统计 → 事件明细落 JSONL → 用 `grant-status` 再核一次真实领取状态 → 输出报告。
 
@@ -233,7 +234,7 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
 | 保活日志 | `keepalive_log` | `--ping`/`--verify-session` 每账号一行 |
 
 默认 `run_log_dir` / `keepalive_log` 指向 `~/workspace/goals/goal/hidden_files`，
-用 `CHAGEE_RUN_LOG_DIR`、`CHAGEE_KEEPALIVE_LOG` 或配置文件改。
+用 `MEITUAN_RUN_LOG_DIR`、`MEITUAN_KEEPALIVE_LOG` 或配置文件改。
 
 复盘建议：`jsonl` 里能算出第一波实际错峰间隔与耗时分布，是调参的唯一依据。
 
@@ -292,14 +293,14 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
 
 凭据（token/webhook/授权码）属敏感值：`claim.config.json` 已加入 `.gitignore`
 （示例文件 `claim.config.example.json` 才入库），也可以用环境变量注入，例如
-`CHAGEE_EMAIL_PASSWORD`。两者都会被登记进脱敏表，日志与报错里只显示 `***`。
+`MEITUAN_EMAIL_PASSWORD`。两者都会被登记进脱敏表，日志与报错里只显示 `***`。
 
 自检命令按通道强制发测试消息（绕过 `notify_events` 过滤）：全局通道发一条，
 每个带 `notify` / `notify_mail` 的账号**按自己的路由各发一条**，结果按
 「全局 + 账号名」分组打到 stdout，谁的通道没配通一眼可见：
 
 ```bash
-chagee --notify-test      # 全成功退出码 0
+meituan --notify-test      # 全成功退出码 0
 ```
 
 ### 8.1 账号级路由（一账号一通道一收件人）
@@ -357,7 +358,7 @@ chagee --notify-test      # 全成功退出码 0
 单账号详情条的实样（三账号就是三条，外加一条汇总）：
 
 ```
-CHAGEE 账号领取详情
+美团 账号领取详情
 177****89
 【5折外卖券】立减20: granted（发送 23:59:59.70，耗时 1.78s） 服务端 GRANTED
 【5折外卖券】立减25: out_of_stock | code=60001: 已抢光
@@ -377,9 +378,9 @@ CHAGEE 账号领取详情
   （多为手机号）掩成 `177****89` 再推给第三方；`email_subject_prefix` 只作用于邮件标题。
 
 ```bash
-chagee --loop --no-notify      # 本次运行不推送（cron 调试用）
-chagee --ping --notify         # 强制打开（仍要求配置了通道）
-CHAGEE_NOTIFY_TARGETS=telegram,feishu chagee --loop
+meituan --loop --no-notify      # 本次运行不推送（cron 调试用）
+meituan --ping --notify         # 强制打开（仍要求配置了通道）
+MEITUAN_NOTIFY_TARGETS=telegram,feishu meituan --loop
 ```
 
 测试时可以自问一句「真发出去了吗」：模块用假 session / 假 SMTP 覆盖了每个通道的
@@ -389,22 +390,22 @@ URL 与载荷形状，`Notifier.targets` 为空时 `enabled=False`，一次网�
 
 ## 9. 配置
 
-优先级：`Config` 默认值 < `claim.config.json` < `CHAGEE_<字段名大写>` 环境变量 < CLI。
+优先级：`Config` 默认值 < `claim.config.json` < `MEITUAN_<字段名大写>` 环境变量 < CLI。
 
 ```bash
-chagee --config /path/to/claim.config.json      # 指定配置文件
-CHAGEE_LOOP_MINUTES=5 CHAGEE_FIRE_LEAD=0.3 chagee --loop --fire-at 10:00:00
+meituan --config /path/to/claim.config.json      # 指定配置文件
+MEITUAN_LOOP_MINUTES=5 MEITUAN_FIRE_LEAD=0.3 meituan --loop --fire-at 10:00:00
 ```
 
 - 配置文件键名必须是 `Config` 字段名，未知键直接报错（防手滑拼错）；
   下划线开头的键视为注释忽略；JSON 数组会自动转成 tuple 字段。
-- 环境变量只能表达标量；`CHAGEE_FIXED_COUPONS` 这类嵌套结构会被明确拒绝并提示改配置文件。
+- 环境变量只能表达标量；`MEITUAN_FIXED_COUPONS` 这类嵌套结构会被明确拒绝并提示改配置文件。
 - **通知凭据别提交**：`claim.config.json` 里写 token 会被 gitignore 之外的方式泄露，
-  推荐用环境变量注入：`CHAGEE_NOTIFY_TARGETS=telegram`、
-  `CHAGEE_TELEGRAM_BOT_TOKEN=...`、`CHAGEE_EMAIL_PASSWORD=...`、`CHAGEE_RESEND_API_KEY=...`（`notify_to_mails` 是 tuple，
+  推荐用环境变量注入：`MEITUAN_NOTIFY_TARGETS=telegram`、
+  `MEITUAN_TELEGRAM_BOT_TOKEN=...`、`MEITUAN_EMAIL_PASSWORD=...`、`MEITUAN_RESEND_API_KEY=...`（`notify_to_mails` 是 tuple，
   可用逗号分隔一次给多个收件人）。
 - 完整可调项见 `claim.config.example.json`（复制为 `claim.config.json` 生效），
-  字段真源见 `chagee/config.py`。
+  字段真源见 `meituan/config.py`。
 
 ---
 
@@ -415,11 +416,11 @@ JSESSIONID 的机会（本项目会自动跟随回写）。
 
 ```cron
 # 每 10 分钟只读探活；退出码 1 = 失效或网络异常，可接告警
-*/10 * * * * cd /path/to/meituan && python3 claim.py --ping >> keepalive.cron.log 2>&1 || notify-send "CHAGEE 会话异常"
+*/10 * * * * cd /path/to/meituan && python3 claim.py --ping >> keepalive.cron.log 2>&1 || notify-send "美团 会话异常"
 ```
 
 想连登录态一起确认，把 `--ping` 换成 `--verify-session`。Windows 用「任务计划程序」，
-操作填 `C:\...\meituan\.venv\Scripts\chagee.exe --ping`。间隔务必小于服务端 session
+操作填 `C:\...\meituan\.venv\Scripts\meituan.exe --ping`。间隔务必小于服务端 session
 空闲超时。
 
 配好通知通道后就不用自己写告警脚本了：`--ping`/`--verify-session` 发现有异常账号
@@ -436,7 +437,7 @@ JSESSIONID 的机会（本项目会自动跟随回写）。
 | `认证文件不是合法 JSON: ...（第 N 行第 M 列）` | 手工编辑漏了逗号/引号 |
 | 配置里写的账号没跑，却没报错 | 看 stderr 的「已跳过」警告：只有配置显式写了却不存在的文件才警告，默认清单里的可选项缺失是静默的 |
 | `--fire-at` 报 `格式应为 HH:MM[:SS[.毫秒]]` | 例：`10:00`、`10:00:00`、`23:59:59.700` 合法；`25:00` 越界 |
-| 第一波就 `rate_limited` | 高频跨波才会撞 40007；确认没开 `CHAGEE_BURST_TEST`，必要时降 `first_wave_inflight` |
+| 第一波就 `rate_limited` | 高频跨波才会撞 40007；确认没开 `MEITUAN_BURST_TEST`，必要时降 `first_wave_inflight` |
 | 一直 `out_of_stock` | 库存真的为空是常态；连击 3 次自动停，可增大 `soldout_stop_after` 延长追抢 |
 | `抢券目标为空（关键词 '5折' 未匹配...）` | `snipe_keyword` / `fixed_coupons` 改坏了，启动即失败而不是空转到超时 |
 | Windows 中文日志乱码 | 控制台是 GBK，设 `PYTHONIOENCODING=utf-8`；日志文件本身是 UTF-8 |
@@ -454,8 +455,8 @@ JSESSIONID 的机会（本项目会自动跟随回写）。
 
 ```
 claim.py                 薄启动器（用法摘要）
-pyproject.toml           包元数据 / 依赖 / console_scripts（chagee = chagee.cli:main）
-chagee/
+pyproject.toml           包元数据 / 依赖 / console_scripts（meituan = meituan.cli:main）
+meituan/
   cli.py                 参数解析、配置装配、账号筛选、分发、退出码
   config.py              Config dataclass + 四层配置合并
   security.py            凭据加载与归一化（单对象/数组）、按条目回写、脱敏登记
@@ -464,7 +465,8 @@ chagee/
   models.py              Coupon / GrantEvent（API 边界即转模型，raw 透传）
   api_client.py          签名、POST、错误分层、JSESSIONID 跟随
   pacing.py              RateLimiter + InflightGate（容量可运行时调整）
-  notify.py              Notifier：Telegram/飞书/钉钉/Server酱/邮件/通用 webhook
+  notify.py              Notifier：Telegram/飞书/钉钉/Server酱/邮件/Resend/通用 webhook
+  report_html.py         邮件报告页：双券卡版式，没抢到的一侧变灰 + 中间裂缝
   flows.py               ping / verify_session / single_run / LoopRunner（步骤方法化）
 tools/import_cookie_export.py  扩展导出 -> 认证文件（支持并入数组）
 tests/                   216 个 unittest（全部 mock）
@@ -473,7 +475,7 @@ tests/                   216 个 unittest（全部 mock）
 
 ```bash
 python -m unittest discover -s tests -t . -v      # 全套测试
-python -m compileall -q chagee tests tools claim.py
+python -m compileall -q meituan tests tools claim.py
 ```
 
 代码不变量（改动时请保持）：
@@ -505,6 +507,10 @@ python -m compileall -q chagee tests tools claim.py
 
 ## 14. 版本与演进
 
+`1.18.0` 项目主体从 CHAGEE 改为**美团**：包目录 `chagee/` → `meituan/`、控制台脚本
+`chagee` → `meituan`、环境变量前缀 `CHAGEE_` → `MEITUAN_`（旧前缀仍兼容）、通知文案
+与邮件报告页全部以美团为主体；接口匹配串 `brand_keyword=霸王茶姬`、
+`snipe_keyword=5折` 属服务端数据，保持不变；
 `1.17.0` 新增 `resend` 通道（Resend API 发信，无需 SMTP），收件人字段统一为
 `notify_to_mails`（`email` 与 `resend` 共用，账号级 `to`/`notify_mail` 仍可覆盖）；
 `1.16.0` 账号级通知路由（账号条目 `notify`/`notify_mail` 决定详情走哪条通道、
@@ -513,7 +519,7 @@ python -m compileall -q chagee tests tools claim.py
 `1.14.0` 收件人可写在账号凭据条目里（`notify_mail`，一账号一份收件箱），
 并把 `claim.config.json` 加入 gitignore、通知凭据在配置加载后立刻登记脱敏；
 `1.13.0` 新增 `temp_email` 通道（自建 cloudflare_temp_email 发信：管理密码或地址 JWT
-两种鉴权）与 `chagee --notify-test` 自检；
+两种鉴权）与 `meituan --notify-test` 自检；
 `1.12.0` 通知支持单账号领取详情逐条推送（`account_result` 事件，含发送时刻/耗时/服务端状态）；
 `1.11.0` 消息通知模块（Telegram/飞书/钉钉/Server酱/邮件/通用 webhook）与四模式接入；
 `1.10.0` 多账号单文件与按条目回写、自适应并发、`send_ts` 精度、`--fire-lead`；

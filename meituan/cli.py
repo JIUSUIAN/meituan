@@ -103,14 +103,14 @@ def _notify_test(cfg, ap):
     try:
         if notifier.enabled:
             out["__global__"] = notifier.notify(
-                "test", "这是一条 chagee 通知测试消息（全局通道）。",
+                "test", "这是一条 meituan 通知测试消息（全局通道）。",
                 force=True, to_mails=tuple(cfg.notify_to_mails or ()) or None)
         for auth in accounts:
             targets, to_mails = account_routing(auth, warn=warn)
             if not (targets or to_mails):
                 continue
             out[auth["label"]] = notifier.notify(
-                "test", "这是一条 chagee 账号路由测试消息。",
+                "test", "这是一条 meituan 账号路由测试消息。",
                 force=True, to_mails=to_mails, targets=targets)
         if not out:
             ap.error("没有可发的测试：notify_targets 为空，且账号条目没写 "

@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "chagee-claim"
+name = "meituan-claim"
 description = "网易大神 partner-perks 霸王茶姬优惠券自动领取（多账号并发、请求签名直调）"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -14,13 +14,13 @@ dependencies = [
 ]
 
 [project.scripts]
-chagee = "chagee.cli:main"
+meituan = "meituan.cli:main"
 
 [tool.setuptools]
-packages = ["chagee"]
+packages = ["meituan"]
 
 [tool.setuptools.dynamic]
-version = { attr = "chagee.__version__" }
+version = { attr = "meituan.__version__" }
 
 [tool.ruff]
 line-length = 88

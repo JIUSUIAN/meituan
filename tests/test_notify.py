@@ -13,13 +13,13 @@ from unittest import mock
 
 import requests
 
-from chagee import flows
-from chagee.config import Config, load_config
-from chagee.models import Coupon
-from chagee.notify import (CHANNELS, REQUIRED, Notifier, account_mails,
+from meituan import flows
+from meituan.config import Config, load_config
+from meituan.models import Coupon
+from meituan.notify import (CHANNELS, REQUIRED, Notifier, account_mails,
                            account_routing, dingtalk_signed_url, mask_label,
                            register_config_secrets)
-from chagee.security import GLOBAL_SECRETS
+from meituan.security import GLOBAL_SECRETS
 
 WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/abc123def456789"
 DING = "https://oapi.dingtalk.com/robot/send?access_token=DTOKEN123456789"
@@ -330,7 +330,7 @@ class EmailChannelTest(unittest.TestCase):
         self.assertEqual("quit", self.log[-1])
         subject = [entry[1] for entry in self.log
                    if isinstance(entry, tuple) and entry[0] == "send"][0]
-        self.assertEqual("[抢券] CHAGEE 抢券结果", subject)
+        self.assertEqual("[抢券] 美团 抢券结果", subject)
 
     def test_starttls_path_for_port_587(self):
         cfg = cfg_with(**dict(self.smtp_cfg, email_smtp_host="smtp.gmail.com:587",
@@ -510,7 +510,7 @@ class FlowsWiringTest(unittest.TestCase):
         with mock.patch.object(flows, "ApiClient") as ac:
             ac.return_value.__enter__ = lambda s: s
             ac.return_value.coupon_info = lambda timeout=None: {}
-            from chagee.errors import ApiError
+            from meituan.errors import ApiError
             ac.return_value.grant_status = mock.Mock(
                 side_effect=ApiError(873, "重新登录"))
             report = flows.ping([auth], notifier=bad)
@@ -527,7 +527,7 @@ class FlowsWiringTest(unittest.TestCase):
         return runner
 
     def test_loop_notifies_result_per_account_and_auth_expired(self):
-        from chagee.models import GrantEvent
+        from meituan.models import GrantEvent
         runner = self._runner(["老号"])
         notifier = _RecordingNotifier()
         runner.notifier = notifier
@@ -616,12 +616,12 @@ class FlowsWiringTest(unittest.TestCase):
 class NotifyConfigTest(unittest.TestCase):
     def test_env_override_targets(self):
         import os
-        os.environ["CHAGEE_NOTIFY_TARGETS"] = "telegram,feishu"
+        os.environ["MEITUAN_NOTIFY_TARGETS"] = "telegram,feishu"
         try:
             cfg = load_config()
             self.assertEqual(("telegram", "feishu"), cfg.notify_targets)
         finally:
-            del os.environ["CHAGEE_NOTIFY_TARGETS"]
+            del os.environ["MEITUAN_NOTIFY_TARGETS"]
 
     def test_defaults_disabled(self):
         cfg = Config()
@@ -630,7 +630,7 @@ class NotifyConfigTest(unittest.TestCase):
         self.assertTrue(cfg.notify_mask_labels)
 
     def test_cli_flag_disables_notify(self):
-        from chagee import cli
+        from meituan import cli
         captured = {}
         original = cli.Notifier
 
@@ -664,7 +664,7 @@ class CliNotifyTest(unittest.TestCase):
         self.addCleanup(GLOBAL_SECRETS.clear)
 
     def _run(self, cfg, accounts, enabled=True, results=None):
-        from chagee import cli
+        from meituan import cli
         sent = []
 
         class Stub:
@@ -740,7 +740,7 @@ class CliNotifyTest(unittest.TestCase):
                       enabled=False)
 
     def test_notify_test_errors_when_no_channel(self):
-        from chagee import cli
+        from meituan import cli
 
         class Disabled:
             enabled = False
@@ -793,7 +793,7 @@ class PerAccountRecipientTest(unittest.TestCase):
                                           to_mails=("mine@example.com",))
         self.assertTrue(results[0][1], results[0])
         sent = [e for e in log if isinstance(e, tuple) and e[0] == "send"]
-        self.assertEqual([("send", "CHAGEE 账号领取详情")], sent)
+        self.assertEqual([("send", "美团 账号领取详情")], sent)
 
     def test_no_recipient_anywhere_reports_field_name(self):
         log = []
@@ -818,7 +818,7 @@ class RegisterSecretsTimingTest(unittest.TestCase):
 
     def test_cli_registers_secrets_before_notifier_exists(self):
         """构造 Notifier 之前就登记：否则更早的失败路径可能把管理密码打出来。"""
-        from chagee import cli
+        from meituan import cli
         cfg = Config(notify_targets=("email",), email_password="SMTPAUTH123SECRET")
 
         class Boom:
@@ -916,7 +916,7 @@ class ResendChannelTest(unittest.TestCase):
     BASE_CFG = dict(notify_targets=("resend",),
                     resend_api_key="re_SECRETKEY123456",
                     resend_from="no-reply@email.troea.com",
-                    resend_from_name="chagee 抢券",
+                    resend_from_name="美团抢券",
                     notify_to_mails=("lastrui@outlook.com",))
 
     def setUp(self):
@@ -942,10 +942,10 @@ class ResendChannelTest(unittest.TestCase):
         self.assertEqual({"Authorization": "Bearer re_SECRETKEY123456"},
                          call["headers"])
         body = call["json"]
-        self.assertEqual("chagee 抢券 <no-reply@email.troea.com>", body["from"])
+        self.assertEqual("美团抢券 <no-reply@email.troea.com>", body["from"])
         self.assertEqual(["lastrui@outlook.com"], body["to"])
         self.assertEqual("正文", body["text"])
-        self.assertIn("CHAGEE 抢券结果", body["subject"])
+        self.assertIn("美团 抢券结果", body["subject"])
 
     def test_from_with_display_name_kept_as_is(self):
         notifier = self._notifier(resend_from="已带名字 <a@x.com>")

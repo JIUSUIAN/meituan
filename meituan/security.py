@@ -187,7 +187,7 @@ def load_auth(path, base_dir=None, secrets=None):
 
     文件顶层是账号数组（多号并一文件）时请用 load_auths。
     错误信息只报告文件名与缺失字段名，绝不输出字段值。"""
-    # 默认基准 = 项目根目录（chagee/ 的上一级），与 config.DIR 语义一致
+    # 默认基准 = 项目根目录（meituan/ 的上一级），与 config.DIR 语义一致
     base = (Path(base_dir) if base_dir
             else Path(__file__).resolve().parent.parent)
     p = base / path

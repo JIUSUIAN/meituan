@@ -28,6 +28,7 @@ import requests
 
 from .config import Config
 from .security import GLOBAL_SECRETS
+from . import report_html
 
 CHANNELS = ("telegram", "feishu", "dingtalk", "serverchan", "email",
             "resend", "webhook")
@@ -55,13 +56,13 @@ SUCCESS_RULES = {
 RECIPIENT_FIELDS = {"email": "notify_to_mails", "resend": "notify_to_mails"}
 
 EVENT_TITLES = {
-    "result": "CHAGEE 抢券结果",
-    "account_result": "CHAGEE 账号领取详情",
-    "auth_expired": "CHAGEE 登录态失效",
-    "rate_limited": "CHAGEE 命中限流",
-    "health": "CHAGEE 健康检查",
-    "error": "CHAGEE 运行异常",
-    "test": "CHAGEE 通知测试",
+    "result": "美团 抢券结果",
+    "account_result": "美团 账号领取详情",
+    "auth_expired": "美团 登录态失效",
+    "rate_limited": "美团 命中限流",
+    "health": "美团 健康检查",
+    "error": "美团 运行异常",
+    "test": "美团 通知测试",
 }
 
 _SECRET_FIELDS = ("telegram_bot_token", "telegram_chat_id", "feishu_webhook",
@@ -220,19 +221,19 @@ class Notifier:
     # -- 对外入口 ---------------------------------------------------------
 
     def notify(self, event, text, title=None, force=False, to_mails=None,
-               targets=None):
+               targets=None, html=None):
         """发送一个事件，返回 [(channel, ok, detail)]；本身永不抛异常。
 
-        force=True 时忽略 notify_events 过滤（--notify-test 用）。
-        targets/to_mails 来自账号条目的路由：只发这些通道、只发这些收件人；
-        targets 给定时不要求全局 notify_targets 非空（凭据仍取全局配置）。"""
+        force=True 时跳过 notify_events 过滤（自检用）。
+        targets/to_mails 来自账号条目的路由。
+        html 给定时，邮件类通道以它作为富文本正文（text 作纯文本替身）。"""
         if not self.cfg.notify_enabled:
             return []
         if targets is None and not self.targets:
             return []          # 全局没配通道：汇总/健康类事件没有去处
         if not force and event not in tuple(self.cfg.notify_events):
             return []
-        title = title or EVENT_TITLES.get(event, "CHAGEE 通知")
+        title = title or EVENT_TITLES.get(event, "美团 通知")
         if targets is not None:
             unknown = [t for t in targets if t not in CHANNELS]
             if unknown:
@@ -251,7 +252,8 @@ class Notifier:
                 results.append((channel, False, "缺少配置: " + ", ".join(missing)))
                 continue
             try:
-                self._send(channel, event, title, text, to_mails=to_mails)
+                self._send(channel, event, title, text, to_mails=to_mails,
+                           html=html)
                 results.append((channel, True, "已发送"))
             except Exception as e:                 # best-effort：异常不外泄
                 results.append((channel, False,
@@ -261,12 +263,27 @@ class Notifier:
                      % (event, channel, detail if ok else "失败 " + detail))
         return results
 
+    def _stamp(self):
+        from .flows import beijing_ts      # 延迟导入：避免与 flows 循环依赖
+        return "生成时间 " + beijing_ts() + "（北京时间）"
+
+    def _render_html(self, renderer, *args, **kwargs):
+        """按 notify_html 开关渲染报告页；关闭或渲染异常时返回 None（退回纯文本）。"""
+        if not self.cfg.notify_html:
+            return None
+        try:
+            return renderer(*args, **kwargs)
+        except Exception:
+            return None
+
     def notify_report(self, event, report, extra_lines=()):
         """把 {label: [item...]} 形式的报告摘要发出去（label 默认掩码）。"""
         lines = []
         statuses = {}
+        masked = {}
         for label, items in (report or {}).items():
             who = mask_label(label) if self.cfg.notify_mask_labels else label
+            masked[who] = items
             parts = []
             for item in items or []:
                 status = item.get("status") or "?"
@@ -276,7 +293,10 @@ class Notifier:
         body = "\n".join(list(lines) + list(extra_lines))
         if statuses:
             body = "状态分布 %s\n%s" % (statuses, body)
-        return self.notify(event, body)
+        html = self._render_html(report_html.render_summary, masked,
+                                 extra_lines=list(extra_lines),
+                                 meta=self._stamp())
+        return self.notify(event, body, html=html)
 
     def notify_account(self, label, items, timings=None, extra_lines=(),
                        to_mails=None, targets=None):
@@ -303,12 +323,16 @@ class Notifier:
         if not lines:
             lines.append("无结果")
         body = "\n".join([who] + lines + list(extra_lines))
+        html = self._render_html(report_html.render_account, who, items,
+                                 timings=timings,
+                                 extra_lines=list(extra_lines),
+                                 meta=self._stamp())
         return self.notify("account_result", body, to_mails=to_mails,
-                           targets=targets)
+                           targets=targets, html=html)
 
     # -- 各通道实现 -------------------------------------------------------
 
-    def _send(self, channel, event, title, text, to_mails=None):
+    def _send(self, channel, event, title, text, to_mails=None, html=None):
         cfg = self.cfg
         body = "%s\n%s" % (title, text)
         if channel == "telegram":
@@ -330,9 +354,9 @@ class Notifier:
                        % cfg.serverchan_send_key, channel,
                        data={"title": title, "desp": text})
         elif channel == "email":
-            self._send_email(title, text, to_mails=to_mails)
+            self._send_email(title, text, to_mails=to_mails, html=html)
         elif channel == "resend":
-            self._send_resend(title, text, to_mails=to_mails)
+            self._send_resend(title, text, to_mails=to_mails, html=html)
         elif channel == "webhook":
             self._post(cfg.notify_webhook_url, None,
                        json={"event": event, "title": title, "text": text})
@@ -371,7 +395,7 @@ class Notifier:
         cls = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
         return cls(host, port, timeout=self.cfg.notify_timeout)
 
-    def _send_email(self, title, text, to_mails=None):
+    def _send_email(self, title, text, to_mails=None, html=None):
         cfg = self.cfg
         host, port = _split_smtp(cfg.email_smtp_host)
         port = port or cfg.email_smtp_port
@@ -381,10 +405,13 @@ class Notifier:
         if not recipients:
             raise RuntimeError("缺少收件邮箱（notify_to_mails 或账号的 to）")
         message = EmailMessage()
-        message["From"] = cfg.email_from or cfg.email_user or "chagee@localhost"
+        message["From"] = cfg.email_from or cfg.email_user or "meituan@localhost"
         message["To"] = ", ".join(recipients)
         message["Subject"] = "%s%s" % (cfg.email_subject_prefix, title)
-        message.set_content(text)
+        message.set_content(text)          # 纯文本替身，永远放在第一段
+        if html:
+            # multipart/alternative：不支持 HTML 的客户端退回上面的纯文本
+            message.add_alternative(html, subtype="html")
         server = self._open_smtp(host, port, cfg.email_use_ssl)
         try:
             if not cfg.email_use_ssl and cfg.email_use_tls:
@@ -398,22 +425,23 @@ class Notifier:
             except Exception:
                 pass
 
-    def _send_resend(self, title, text, to_mails=None):
+    def _send_resend(self, title, text, to_mails=None, html=None):
         """Resend API：POST https://api.resend.com/emails。
 
-        域名在 Resend 验证过就能发，不需要 SMTP；收件人一次调用给一个列表，
-        多个收件人不必逐个发。响应里有 id 才算受理，否则按失败处理。"""
+        域名在 Resend 验证过就能发，不需要 SMTP；收件人一次调用给一个列表。
+        响应里有 id 才算受理，否则按失败处理。"""
         cfg = self.cfg
         recipients = tuple(to_mails or ()) or tuple(cfg.notify_to_mails or ())
         if not recipients:
             raise RuntimeError("缺少收件邮箱（notify_to_mails 或账号的 to）")
         sender = cfg.resend_from
         if "<" not in sender:
-            sender = "%s <%s>" % (cfg.resend_from_name or "chagee", sender)
+            sender = "%s <%s>" % (cfg.resend_from_name or "meituan", sender)
         payload = self._post(
             "https://api.resend.com/emails", None,
             json={"from": sender, "to": list(recipients),
-                  "subject": title, "text": text},
+                  "subject": title, "text": text,
+                  **({"html": html} if html else {})},
             headers={"Authorization": "Bearer " + cfg.resend_api_key})
         if not (payload or {}).get("id"):
             raise RuntimeError("Resend 未返回消息 id: %s"

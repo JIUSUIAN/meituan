@@ -12,10 +12,10 @@ from pathlib import Path
 
 import requests
 
-from chagee.api_client import ApiClient
-from chagee.config import Config, load_config
-from chagee.errors import ApiTransportError
-from chagee.security import GLOBAL_SECRETS, load_auth, save_auth
+from meituan.api_client import ApiClient
+from meituan.config import Config, load_config
+from meituan.errors import ApiTransportError
+from meituan.security import GLOBAL_SECRETS, load_auth, save_auth
 
 OLD_JSID = "oldjsessionidvalue000001"
 NEW_JSID = "newjsessionidvalue999999"
@@ -211,16 +211,16 @@ class SaveAndLoadAuthTest(unittest.TestCase):
 
 
 class SessionCookieNamesConfigTest(unittest.TestCase):
-    """跟踪名单可配置（CHAGEE_SESSION_COOKIE_NAMES 逗号分隔）。"""
+    """跟踪名单可配置（MEITUAN_SESSION_COOKIE_NAMES 逗号分隔）。"""
 
     def test_env_override(self):
         missing = Path(tempfile.gettempdir()) / "definitely-missing.json"
-        os.environ["CHAGEE_SESSION_COOKIE_NAMES"] = "JSESSIONID,APP_SID"
+        os.environ["MEITUAN_SESSION_COOKIE_NAMES"] = "JSESSIONID,APP_SID"
         try:
             cfg = load_config(path=missing)
             self.assertEqual(cfg.session_cookie_names, ("JSESSIONID", "APP_SID"))
         finally:
-            del os.environ["CHAGEE_SESSION_COOKIE_NAMES"]
+            del os.environ["MEITUAN_SESSION_COOKIE_NAMES"]
 
     def test_extra_tracked_name(self):
         GLOBAL_SECRETS.clear()
@@ -243,7 +243,7 @@ class CookieStoreTest(unittest.TestCase):
         GLOBAL_SECRETS.clear()
 
     def test_header_merges_all_and_preserves_order(self):
-        from chagee.cookies import CookieStore
+        from meituan.cookies import CookieStore
         store = CookieStore({"GL-XSRF-TOKEN": "a", "GOD_UUID": "b",
                              "JSESSIONID": "c"},
                             tracked_names=("JSESSIONID",))
@@ -251,7 +251,7 @@ class CookieStoreTest(unittest.TestCase):
                          "GL-XSRF-TOKEN=a; GOD_UUID=b; JSESSIONID=c")
 
     def test_case_insensitive_get_and_set(self):
-        from chagee.cookies import CookieStore
+        from meituan.cookies import CookieStore
         store = CookieStore({"jsessionid": "c1"}, tracked_names=("JSESSIONID",))
         self.assertEqual(store.get("JSESSIONID"), "c1")
         self.assertFalse(store.set("JsEssIoNiD", "c1"))   # 同值不变

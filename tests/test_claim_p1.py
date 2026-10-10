@@ -12,10 +12,10 @@ import time
 import unittest
 from pathlib import Path
 
-from chagee import api_client
-from chagee import flows
-from chagee.config import Config, load_config
-from chagee.pacing import GrantPacing, InflightGate, RateLimiter
+from meituan import api_client
+from meituan import flows
+from meituan.config import Config, load_config
+from meituan.pacing import GrantPacing, InflightGate, RateLimiter
 
 AUTH = {
     "GL-XSRF-TOKEN": "tok-SECRET-abcdef123456",
@@ -158,8 +158,8 @@ class LoadConfigTest(unittest.TestCase):
 
     def test_env_layer_and_cli_precedence(self):
         missing = Path(tempfile.gettempdir()) / "definitely-missing.json"
-        os.environ["CHAGEE_LOOP_MINUTES"] = "7"
-        os.environ["CHAGEE_BURST_TEST"] = "1"
+        os.environ["MEITUAN_LOOP_MINUTES"] = "7"
+        os.environ["MEITUAN_BURST_TEST"] = "1"
         try:
             cfg = load_config(path=missing)
             self.assertEqual(cfg.loop_minutes, 7.0)
@@ -167,8 +167,8 @@ class LoadConfigTest(unittest.TestCase):
             cfg2 = load_config(path=missing, overrides={"loop_minutes": 3.0})
             self.assertEqual(cfg2.loop_minutes, 3.0)  # CLI 覆盖 env
         finally:
-            del os.environ["CHAGEE_LOOP_MINUTES"]
-            del os.environ["CHAGEE_BURST_TEST"]
+            del os.environ["MEITUAN_LOOP_MINUTES"]
+            del os.environ["MEITUAN_BURST_TEST"]
 
     def test_snipe_coupons_property(self):
         cfg = Config()
@@ -321,7 +321,7 @@ class StderrAndRetryTest(unittest.TestCase):
     def test_runlogger_writes_stderr_not_stdout(self):
         import io
         import sys as _sys
-        from chagee.flows import RunLogger
+        from meituan.flows import RunLogger
         out, err = io.StringIO(), io.StringIO()
         old_o, old_e = _sys.stdout, _sys.stderr
         _sys.stdout, _sys.stderr = out, err
@@ -334,7 +334,7 @@ class StderrAndRetryTest(unittest.TestCase):
         self.assertIn("hello", err.getvalue())
 
     def test_default_session_has_connect_retry_only(self):
-        from chagee.api_client import ApiClient
+        from meituan.api_client import ApiClient
         client = ApiClient(dict(AUTH))  # 自建 session
         try:
             adapter = client.session.get_adapter("https://inf.ds.163.com/x")
@@ -345,7 +345,7 @@ class StderrAndRetryTest(unittest.TestCase):
             client.close()
 
     def test_injected_session_not_modified(self):
-        from chagee.api_client import ApiClient
+        from meituan.api_client import ApiClient
         s = RoutingSession({})
         client = ApiClient(dict(AUTH), session=s)
         self.assertIs(client.session, s)
@@ -406,7 +406,7 @@ class CouponModelTest(unittest.TestCase):
     """评审第14项：领域模型。API 边界转换、未知字段透传、售罄语义。"""
 
     def test_from_api_roundtrip_preserves_raw(self):
-        from chagee.models import Coupon
+        from meituan.models import Coupon
         raw = {"couponId": "c1", "couponName": "n", "couponType": "PHONE_REWARD",
                "leftStock": 5, "unknownField": {"x": 1}}
         c = Coupon.from_api(raw)
@@ -419,21 +419,21 @@ class CouponModelTest(unittest.TestCase):
         self.assertEqual(d["couponId"], "c1")
 
     def test_sold_out_only_when_zero(self):
-        from chagee.models import Coupon
+        from meituan.models import Coupon
         self.assertTrue(Coupon.from_api({"couponId": "c", "leftStock": 0}).sold_out())
         # leftStock 未知（None）按未抢光处理，与历史 `== 0` 判断一致
         self.assertFalse(Coupon.from_api({"couponId": "c"}).sold_out())
         self.assertFalse(Coupon.from_api({"couponId": "c", "leftStock": 3}).sold_out())
 
     def test_grant_event_named_fields(self):
-        from chagee.models import GrantEvent
+        from meituan.models import GrantEvent
         ev = GrantEvent("ts", "acc", "券", "granted", 0.5)
         self.assertEqual((ev.send_ts, ev.label, ev.status), ("ts", "acc", "granted"))
 
     def test_try_grant_skips_placeholder_and_direct_link(self):
-        from chagee.api_client import ApiClient
-        from chagee.flows import try_grant
-        from chagee.models import Coupon
+        from meituan.api_client import ApiClient
+        from meituan.flows import try_grant
+        from meituan.models import Coupon
         client = ApiClient(dict(AUTH), session=RoutingSession({}))
         status, _, send_ts = try_grant(client, "b",
                                        Coupon(coupon_id="x",

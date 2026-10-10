@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""配置分层：dataclass 默认值 -> JSON 配置文件 -> CHAGEE_* 环境变量 -> CLI 覆盖。
+"""配置分层：dataclass 默认值 -> JSON 配置文件 -> MEITUAN_* 环境变量 -> CLI 覆盖。
 
 优先级从左到右递增；Config 实例创建后视为只读（运行期可变状态放在
 pacing/flows 的实例里，不放模块全局）。
@@ -10,10 +10,13 @@ from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 from typing import Optional
 
-# 项目根目录（chagee/ 的上一级）：claim.config.json 与 cookies*.json 的所在处
+# 项目根目录（meituan/ 的上一级）：claim.config.json 与 cookies*.json 的所在处
 DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_FILE = "claim.config.json"
-ENV_PREFIX = "CHAGEE_"
+ENV_PREFIX = "MEITUAN_"
+# 主体从 CHAGEE 改成美团时，旧前缀继续接受（新前缀优先）——否则用户既有的
+# cron / 环境变量会静默失效，抢券行为悄悄回到默认值
+LEGACY_ENV_PREFIX = "CHAGEE_"
 
 
 @dataclass
@@ -75,6 +78,7 @@ class Config:
     notify_events: tuple = ("result", "account_result", "auth_expired", "health")
     notify_timeout: float = 5.0
     notify_mask_labels: bool = True   # 通知里掩掉 label 中的手机号等长数字
+    notify_html: bool = True          # 邮件类通道（email/resend）发送 HTML 报告页
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     feishu_webhook: str = ""
@@ -95,9 +99,9 @@ class Config:
     email_from: str = ""
     email_subject_prefix: str = ""
     # Resend（https://resend.com）：域名验证后直接用 API 发信，无需 SMTP
-    resend_api_key: str = ""          # 建议用环境变量 CHAGEE_RESEND_API_KEY 注入
+    resend_api_key: str = ""          # 建议用环境变量 MEITUAN_RESEND_API_KEY 注入
     resend_from: str = ""             # 例 no-reply@email.example.com（已验证域名）
-    resend_from_name: str = "chagee 抢券"
+    resend_from_name: str = "美团抢券"
 
     # --- 运行参数（CLI/环境变量可覆盖） ---
     loop_minutes: float = 10
@@ -106,7 +110,7 @@ class Config:
     # 开火提前量（秒）：整点抢的响应在 1.8~3.2s，把请求提前发出去补偿网络往返；
     # 0 表示严格按 fire_at 发出
     fire_lead: float = 0.0
-    burst_test: bool = False          # CHAGEE_BURST_TEST=1：跳过安全模式切换
+    burst_test: bool = False          # MEITUAN_BURST_TEST=1：跳过安全模式切换
 
     @property
     def snipe_coupons(self):
@@ -141,7 +145,7 @@ def load_config(path=None, overrides=None):
     """构建最终配置。
 
     层1 dataclass 默认值；层2 JSON 文件（存在才读，键必须是 Config 字段名）；
-    层3 环境变量 CHAGEE_<FIELD_UPPER>；层4 overrides（CLI，仅非 None 项）。"""
+    层3 环境变量 MEITUAN_<FIELD_UPPER>；层4 overrides（CLI，仅非 None 项）。"""
     values = {}
 
     cfg_path = Path(path) if path else (DIR / DEFAULT_CONFIG_FILE)
@@ -163,7 +167,9 @@ def load_config(path=None, overrides=None):
         values.update(file_values)
 
     for f in fields(Config):
-        env_key = ENV_PREFIX + f.name.upper()
+        new_key = ENV_PREFIX + f.name.upper()
+        old_key = LEGACY_ENV_PREFIX + f.name.upper()
+        env_key = new_key if new_key in os.environ else old_key
         if env_key not in os.environ:
             continue
         if f.default is MISSING:

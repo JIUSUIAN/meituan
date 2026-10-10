@@ -32,7 +32,7 @@ jobs:
           fi
 
       - name: 语法编译检查
-        run: python -m compileall -q chagee tests claim.py
+        run: python -m compileall -q meituan tests claim.py
 
       # 测试全部 mock，不访问真实第三方接口
       - name: 单元测试

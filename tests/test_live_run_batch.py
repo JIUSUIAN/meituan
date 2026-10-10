@@ -22,12 +22,12 @@ from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from chagee import cli, flows
-from chagee.api_client import ApiClient
-from chagee.config import Config, load_config
-from chagee.models import Coupon
-from chagee.pacing import GrantPacing
-from chagee.security import load_auth, load_auths, update_auth_cookies
+from meituan import cli, flows
+from meituan.api_client import ApiClient
+from meituan.config import Config, load_config
+from meituan.models import Coupon
+from meituan.pacing import GrantPacing
+from meituan.security import load_auth, load_auths, update_auth_cookies
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -303,11 +303,11 @@ class SendTimestampTest(unittest.TestCase):
 class FireLeadTest(unittest.TestCase):
     def test_config_default_and_env_override(self):
         self.assertEqual(0.0, Config().fire_lead)
-        os.environ["CHAGEE_FIRE_LEAD"] = "0.3"
+        os.environ["MEITUAN_FIRE_LEAD"] = "0.3"
         try:
             self.assertEqual(0.3, load_config().fire_lead)
         finally:
-            del os.environ["CHAGEE_FIRE_LEAD"]
+            del os.environ["MEITUAN_FIRE_LEAD"]
 
     def test_cli_forwards_fire_lead(self):
         captured = {}
