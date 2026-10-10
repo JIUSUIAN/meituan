@@ -330,7 +330,7 @@ class EmailChannelTest(unittest.TestCase):
         self.assertEqual("quit", self.log[-1])
         subject = [entry[1] for entry in self.log
                    if isinstance(entry, tuple) and entry[0] == "send"][0]
-        self.assertEqual("[抢券] 美团 抢券结果", subject)
+        self.assertEqual("[抢券] 美团大额券抢券通知", subject)
 
     def test_starttls_path_for_port_587(self):
         cfg = cfg_with(**dict(self.smtp_cfg, email_smtp_host="smtp.gmail.com:587",
@@ -793,7 +793,7 @@ class PerAccountRecipientTest(unittest.TestCase):
                                           to_mails=("mine@example.com",))
         self.assertTrue(results[0][1], results[0])
         sent = [e for e in log if isinstance(e, tuple) and e[0] == "send"]
-        self.assertEqual([("send", "美团 账号领取详情")], sent)
+        self.assertEqual([("send", "美团大额券抢券通知")], sent)
 
     def test_no_recipient_anywhere_reports_field_name(self):
         log = []
@@ -945,7 +945,7 @@ class ResendChannelTest(unittest.TestCase):
         self.assertEqual("美团抢券 <no-reply@email.troea.com>", body["from"])
         self.assertEqual(["lastrui@outlook.com"], body["to"])
         self.assertEqual("正文", body["text"])
-        self.assertIn("美团 抢券结果", body["subject"])
+        self.assertEqual("美团大额券抢券通知", body["subject"])
 
     def test_from_with_display_name_kept_as_is(self):
         notifier = self._notifier(resend_from="已带名字 <a@x.com>")

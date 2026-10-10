@@ -56,13 +56,13 @@ SUCCESS_RULES = {
 RECIPIENT_FIELDS = {"email": "notify_to_mails", "resend": "notify_to_mails"}
 
 EVENT_TITLES = {
-    "result": "美团 抢券结果",
-    "account_result": "美团 账号领取详情",
-    "auth_expired": "美团 登录态失效",
-    "rate_limited": "美团 命中限流",
-    "health": "美团 健康检查",
-    "error": "美团 运行异常",
-    "test": "美团 通知测试",
+    "result": "美团大额券 · 抢券结果",
+    "account_result": "美团大额券 · 账号领取详情",
+    "auth_expired": "美团大额券 登录态失效",
+    "rate_limited": "美团大额券 命中限流",
+    "health": "美团大额券 健康检查",
+    "error": "美团大额券 运行异常",
+    "test": "美团大额券 通知测试",
 }
 
 _SECRET_FIELDS = ("telegram_bot_token", "telegram_chat_id", "feishu_webhook",
@@ -407,7 +407,8 @@ class Notifier:
         message = EmailMessage()
         message["From"] = cfg.email_from or cfg.email_user or "meituan@localhost"
         message["To"] = ", ".join(recipients)
-        message["Subject"] = "%s%s" % (cfg.email_subject_prefix, title)
+        message["Subject"] = "%s%s" % (cfg.email_subject_prefix,
+                                       cfg.notify_subject or title)
         message.set_content(text)          # 纯文本替身，永远放在第一段
         if html:
             # multipart/alternative：不支持 HTML 的客户端退回上面的纯文本
@@ -440,7 +441,7 @@ class Notifier:
         payload = self._post(
             "https://api.resend.com/emails", None,
             json={"from": sender, "to": list(recipients),
-                  "subject": title, "text": text,
+                  "subject": cfg.notify_subject or title, "text": text,
                   **({"html": html} if html else {})},
             headers={"Authorization": "Bearer " + cfg.resend_api_key})
         if not (payload or {}).get("id"):

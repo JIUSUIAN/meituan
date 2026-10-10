@@ -55,6 +55,21 @@ class CardStateTest(unittest.TestCase):
         self.assertIn("未参与", html)               # 右卡位留空并标注
 
 
+class BrandingTest(unittest.TestCase):
+    """页面标题 = 美团大额券；状态语在标题下方；邮件主题见 Config.notify_subject。"""
+
+    def test_page_title_and_brand_line(self):
+        html = report_html.render_account("老号", [item(A, "granted"),
+                                                   item(B, "granted")])
+        self.assertIn("<title>美团大额券</title>", html)
+        self.assertIn("美团大额券</div>", html)          # 页面大标题
+        self.assertIn("恭喜您 抢到券了！", html)          # 状态横幅仍在
+        self.assertIn("账号领取详情", html)               # 副标题标明报告类型
+
+    def test_subject_default(self):
+        self.assertEqual("美团大额券抢券通知", Config().notify_subject)
+
+
 class AmountParsingTest(unittest.TestCase):
     def test_full_reduction(self):
         self.assertEqual("满40减20", report_html._amount("美团外卖 满40减20"))

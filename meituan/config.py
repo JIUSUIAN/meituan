@@ -79,6 +79,7 @@ class Config:
     notify_timeout: float = 5.0
     notify_mask_labels: bool = True   # 通知里掩掉 label 中的手机号等长数字
     notify_html: bool = True          # 邮件类通道（email/resend）发送 HTML 报告页
+    notify_subject: str = "美团大额券抢券通知"   # 邮件主题（页面大标题见 report_html.BRAND）
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     feishu_webhook: str = ""
@@ -101,7 +102,7 @@ class Config:
     # Resend（https://resend.com）：域名验证后直接用 API 发信，无需 SMTP
     resend_api_key: str = ""          # 建议用环境变量 MEITUAN_RESEND_API_KEY 注入
     resend_from: str = ""             # 例 no-reply@email.example.com（已验证域名）
-    resend_from_name: str = "美团抢券"
+    resend_from_name: str = "美团大额券"
 
     # --- 运行参数（CLI/环境变量可覆盖） ---
     loop_minutes: float = 10

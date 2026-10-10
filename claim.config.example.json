@@ -39,6 +39,6 @@
     "email_subject_prefix": "[抢券] ",
     "resend_api_key": "re_xxx（或用环境变量 MEITUAN_RESEND_API_KEY）",
     "resend_from": "no-reply@你的已验证域名",
-    "resend_from_name": "美团抢券"
+    "resend_from_name": "美团大额券"
   }
 }

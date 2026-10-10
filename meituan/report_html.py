@@ -41,6 +41,9 @@ STATUS_COLORS = {
 FONT = ("-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC',"
         "'Hiragino Sans GB','Microsoft YaHei',sans-serif")
 
+# 页面品牌标题（邮件主题由 Config.notify_subject 决定，两者可各自调整）
+BRAND = "美团大额券"
+
 _FULL_RE = re.compile(r"满\s*(\d+)\s*减\s*(\d+)")
 _CUT_RE = re.compile(r"立减\s*(\d+)")
 _DISCOUNT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*折")
@@ -202,20 +205,23 @@ def _detail_rows(items, timings):
             + "".join(rows) + '</table>')
 
 
-def _page(title, headline, headline_color, body, footer):
+def _page(headline, headline_color, kind, body, footer):
+    """页面骨架：品牌标题「美团大额券」在上，状态横幅居中，报告类型作副标题。"""
     return (
         '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>' + escape(title) + '</title></head>'
+        '<title>' + escape(BRAND) + '</title></head>'
         '<body bgcolor="#fdf3dd" style="margin:0;padding:18px;background:'
         '#fdf3dd;background:linear-gradient(180deg,#fff9e8,#fbeccb);color:'
         '#1f2329;font-family:' + FONT + ';font-size:14px;line-height:1.6">'
         '<div style="max-width:620px;margin:0 auto">'
-        '<div style="text-align:center;margin-bottom:10px">'
-        '<div style="font-size:24px;font-weight:900;color:' + headline_color
-        + ';letter-spacing:1px">' + escape(headline) + '</div>'
+        '<div style="text-align:center;margin-bottom:12px">'
+        '<div style="font-size:18px;font-weight:900;color:#1f2329;'
+        'letter-spacing:2px">' + escape(BRAND) + '</div>'
+        '<div style="font-size:26px;font-weight:900;color:' + headline_color
+        + ';letter-spacing:1px;margin-top:4px">' + escape(headline) + '</div>'
         '<div style="font-size:12px;color:#8a6a1f;margin-top:2px">'
-        + escape(title) + '</div></div>'
+        + escape(kind) + '</div></div>'
         '<div style="background:#fffdf6;border:1px solid #f0e0b8;'
         'border-radius:20px;padding:18px 16px;'
         'box-shadow:0 10px 26px rgba(180,130,20,.12)">' + body + '</div>'
@@ -254,7 +260,7 @@ def render_account(label, items, timings=None, extra_lines=(), meta="",
                  + _detail_rows(overflow, timings))
     body += ('<div style="font-size:12px;color:#8a6a1f;margin-top:10px">账号 '
              + escape(str(label)) + '</div>' + _list(extra_lines))
-    return _page("美团 账号领取详情", headline, color, body,
+    return _page(headline, color, "账号领取详情 · " + str(label), body,
                  footer or meta or "")
 
 
@@ -280,7 +286,7 @@ def render_summary(report, extra_lines=(), meta="", footer=None, title=None):
                     if _is_lit(it))
     headline, color = _headline(lit_total, total_items)
     body = _stat_chips(counts) + "".join(blocks) + _list(extra_lines)
-    return _page(title or "美团 抢券结果", headline, color, body,
+    return _page(headline, color, title or "抢券结果汇总", body,
                  footer or meta or "")
 
 
