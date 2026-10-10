@@ -20,12 +20,13 @@ chagee/
   flows.py               业务流程：RunLogger、ping（只读）、verify_session（显式副作用）、
                          single_run、LoopRunner（原 200 行 loop_run 拆为步骤方法）
 tools/
-  import_cookie_export.py  浏览器 Cookie 导出文件 -> 认证文件（会话重建闭环）
+  import_cookie_export.py  浏览器 Cookie 导出文件 -> 认证文件（可并入多账号数组）
 tests/
   test_claim_p0.py         P0 回归测试（33 个）
   test_claim_p1.py         P1 测试（26 个：闸门/配置分层/LoopRunner 冒烟/single_run/模型）
   test_cookie_rotation.py  Cookie 跟踪与归一化测试（20 个）
-  test_review_batch.py     评审第 2 批测试（38 个：tmp 加固/退出码/CLI 校验/JSONL/导出工具）
+  test_review_batch.py     评审第 1 批测试（38 个：tmp 加固/退出码/CLI 校验/JSONL/导出工具）
+  test_live_run_batch.py   真实运行数据校准（31 个：多账号单文件/自适应并发/发送时刻/提前量）
 .github/workflows/ci.yml  CI：多版本 Python 跑全套 mock 测试 + 凭据入库守卫
 ```
 
@@ -158,6 +159,38 @@ tests/
 
 测试：全套 117 个（P0 33 + P1 26 + rotation/cookies 20 + 评审批次 38）。
 
+## 真实运行数据校准（1.10.0）
+
+依据 2026-10-09 23:59 那次成功抢券的日志（提前 0.3s 开火、4 张券全中、
+响应 1.78~3.17s）与 2026-10-10 起「三个账号并入一个 cookies.json」的实际用法：
+
+- **多账号单文件**：`cookies.json` 顶层可以是账号数组，`load_auths` 逐条归一化
+  校验；条目没写 `label` 时用 `文件名#序号`，`label` 重复一律加序号去重
+  （label 是客户端字典、退避表与报告的键，重复会静默顶掉账号——原脚本就踩过）。
+- **按条目就地回写**：JSESSIONID 轮换只更新自己那一条
+  （`update_auth_cookies(path, index)`，读-改-写持锁），**绝不整体覆盖**，
+  否则同文件其他账号会被抹掉。
+- **第一波并发随账号数走**：`first_wave_inflight` 默认 4 → 6（账号数 × 2 张券，
+  实测 2 账号 4 并发、3 账号 6 并发单波 0.15s 内打完且不触发 40007）；
+  线程池规模由账号数与目标券数推导（2 账号 → 7，3 账号 → 10），不再写死。
+- **发送时刻统计修正**：`try_grant` 返回 `(status, detail, send_ts)`，
+  `send_ts` 在限速等待与在飞闸门都等到之后、POST 发出之前采集。之前它在
+  波次开始时取，所以昨晚日志里 4 个请求全记成同一时刻 `23:59:59.70`，
+  错峰效果完全看不出来。
+- **`--fire-lead` 开火提前量**：整点抢的响应要 1.8~3.2s，把请求提前
+  0.3s 发出，到整点那一刻请求已抵达服务端。之前这个提前量是手工写进
+  `--fire-at 23:59:59.70` 的，现在是显式参数（`fire_lead` 也可配）。
+- **时钟校验可诊断**：`timedatectl` 返回空（非 systemd 环境实测遇到）时，
+  日志附带 returncode 与 stderr 摘要，不再只写「无输出」。
+- **导出工具并入数组文件**：`--merge --label 小号` 按 label 替换或追加条目，
+  其他账号原样不动；校验不过会回滚，不会毁掉同文件里的已有账号。
+
+注意：`label` 会进日志、stdout 报告和 JSONL 事件明细，写账号标识时别放手机号
+之类敏感信息（用「老号/小号」这类称呼即可）。
+
+测试：全套 148 个（+31：多账号单文件与去重、按条目回写不伤其他账号、
+自适应并发、send_ts 反映限速等待、fire_lead 贯通配置/CLI/等待、回滚与脱敏）。
+
 ## 运行
 
 ```bash
@@ -170,11 +203,21 @@ python -m unittest discover -s tests -t . -v
 # 日常
 chagee --ping                                    # 只读健康检查（cron 保活）
 chagee --verify-session --accounts cookies-new   # 验证新导出的凭据（有副作用）
-chagee --loop --fire-at 14:00:00.000             # 定时开抢
+chagee --loop --fire-at 23:59:59.70 --fire-lead 0.3   # 整点抢（提前量补偿 RTT）
+chagee --loop --accounts 小号                     # 只跑数组文件里的某个账号
 chagee --loop 2>/dev/null > result.json          # stdout 只有 JSON 报告
 
+# 多账号：一个文件放账号数组（每条写 label），或分文件列进 auth_files
+# cookies.json 结构：
+# [
+#   {"label": "老号", "GL-XSRF-TOKEN": "...", "GOD_UUID": "...",
+#    "device_id": "...", "cookies": {"JSESSIONID": "..."}},
+#   {"label": "小号", ...}
+# ]
+
 # 会话重建（873 之后）：浏览器扩展导出 cookie -> 认证文件
-python tools/import_cookie_export.py export.json --domain 163.com
+python tools/import_cookie_export.py export.json --domain 163.com          # 整体写单对象
+python tools/import_cookie_export.py export.json --merge --label 小号        # 并入数组文件
 
 # Windows 本目录 .venv
 .venv\Scripts\python.exe -m unittest discover -s tests -t .
@@ -189,6 +232,12 @@ python tools/import_cookie_export.py export.json --domain 163.com
 # 每 10 分钟只读探活；退出码 1 = 登录态失效或网络异常，可接告警
 */10 * * * * cd /path/to/meituan && python3 claim.py --ping >> keepalive.cron.log 2>&1 || notify-send "CHAGEE 会话异常"
 ```
+
+`--ping` 只证明「网络与签名可用」（只读接口不校验登录，状态是 `reachable`
+而非 `authenticated`）。要真正确认登录态就用 `--verify-session`：它打一次
+探针券，已领过会返回 803 仍判 `authenticated`，幂等无额外损失（唯一前提是
+当天探针券若未领会被顺手领掉——每天本来都要领，无害）。定时保活想覆盖登录态
+就把上面的 `--ping` 换成 `--verify-session`。
 
 注意：
 - Windows 控制台为 GBK 时中文日志显示乱码，属终端编码问题，可设

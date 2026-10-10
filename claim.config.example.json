@@ -1,11 +1,18 @@
 {
   "_说明": "复制为 claim.config.json 生效；字段真源见 chagee/config.Config。此处只列常调项。",
+  "auth_files": ["cookies.json"],
+  "_auth_files说明": "单个文件可以是账号对象，也可以是账号数组（多号并一文件，每条写 label）",
+  "first_wave_gap": 0.05,
+  "first_wave_inflight": 6,
+  "_并发说明": "第一波在飞上限 = 账号数 × 目标券数（实测 2 账号 4、3 账号 6 都不触发 40007）",
   "sustained_gap": 0.5,
   "sustained_inflight": 2,
   "rate_limit_backoff": 60,
   "soldout_stop_after": 3,
   "loop_minutes": 10,
   "loop_interval": 2.0,
+  "fire_lead": 0.3,
+  "_fire_lead说明": "开火提前量秒数：整点抢实测响应 1.8~3.2s，提前 0.3s 发出",
   "session_cookie_names": ["JSESSIONID"],
   "persist_rotated_cookies": true
 }
