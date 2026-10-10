@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """JSESSIONID 轮换跟踪测试：只跟随服务端下发，绝不本地生成。
 
-全部 mock，不访问真实接口。运行：python -m unittest test_cookie_rotation -v
+全部 mock，不访问真实接口。
+运行：python -m unittest discover -s tests -t . -v
 """
 import json
 import os

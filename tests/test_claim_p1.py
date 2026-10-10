@@ -2,7 +2,7 @@
 """P1 回归测试：InflightGate / GrantPacing / 配置分层 / LoopRunner 冒烟 / single_run。
 
 全部使用 mock，不访问真实第三方业务接口。
-运行：python -m unittest test_claim_p1 -v
+运行：python -m unittest discover -s tests -t . -v
 """
 import json
 import os
@@ -186,7 +186,7 @@ class LoadConfigTest(unittest.TestCase):
         self.assertEqual(cfg.session_cookie_names, ("JSESSIONID", "A"))
 
     def test_shipped_example_config_loads(self):
-        example = Path(__file__).parent / "claim.config.example.json"
+        example = Path(__file__).parent.parent / "claim.config.example.json"
         cfg = load_config(path=example)
         self.assertEqual(cfg.rate_limit_backoff, 60)
         self.assertEqual(cfg.sustained_inflight, 2)

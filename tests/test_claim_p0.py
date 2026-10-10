@@ -2,7 +2,7 @@
 """P0 回归测试（P1 模块拆分后迁移）：T01 脱敏 / T02 健康检查语义 / T03 结构化错误。
 
 全部使用 mock，不访问真实第三方业务接口。
-运行：python -m unittest test_claim_p0 -v
+运行：python -m unittest discover -s tests -t . -v
 """
 import json
 import tempfile
@@ -329,8 +329,7 @@ class VerifySessionPathTest(unittest.TestCase):
         cfg = Config()
         client = make_client([make_response(200, {"code": 803, "errmsg": "已领取"})])
         flows.try_grant(client, cfg.fixed_brand_id,
-                        Coupon(coupon_id=flows.PING_PROBE_ID,
-                               coupon_type="PHONE_REWARD"))
+                        Coupon.from_api(cfg.probe_coupon))
         self.assertEqual(client.session.calls[0]["url"],
                          cfg.base_url + cfg.grant_path)
 
@@ -345,7 +344,8 @@ class DocConsistencyTest(unittest.TestCase):
         self.assertEqual(Config().loop_interval, 2.0)
 
     def test_cli_doc_mentions_defaults(self):
-        src = (Path(__file__).parent / "claim.py").read_text(encoding="utf-8")
+        src = (Path(__file__).parent.parent / "claim.py").read_text(
+            encoding="utf-8")
         self.assertIn("--interval 2.0", src)
         self.assertIn("退避 60 秒", src)
 
