@@ -66,6 +66,32 @@ class Config:
     run_log_dir: str = str(
         Path.home() / "workspace/goals/goal/hidden_files")
 
+    # --- 消息通知（token/webhook/SMTP 密码都是凭据，登记脱敏）---
+    # 通道名：telegram / feishu / dingtalk / serverchan / email / webhook
+    notify_targets: tuple = ()
+    notify_enabled: bool = True       # --no-notify 可临时关掉
+    # 只发这些事件，避免高频打扰
+    notify_events: tuple = ("result", "auth_expired", "health")
+    notify_timeout: float = 5.0
+    notify_mask_labels: bool = True   # 通知里掩掉 label 中的手机号等长数字
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    feishu_webhook: str = ""
+    dingtalk_webhook: str = ""
+    dingtalk_secret: str = ""         # 机器人「加签」密钥，留空则不签名
+    serverchan_send_key: str = ""
+    notify_webhook_url: str = ""      # 通用 webhook：POST {event,title,text}
+    # 邮件：QQ/163 用 smtp 主机 + 授权码 + SSL(465)；Gmail 用 STARTTLS(587)
+    email_smtp_host: str = ""         # 可写 'smtp.qq.com:465' 覆盖端口
+    email_smtp_port: int = 465
+    email_use_ssl: bool = True        # 465 隐式 TLS
+    email_use_tls: bool = False       # 587 STARTTLS（use_ssl=False 时才生效）
+    email_user: str = ""
+    email_password: str = ""          # 授权码/应用专用密码，不是登录密码
+    email_from: str = ""
+    email_to: tuple = ()
+    email_subject_prefix: str = ""
+
     # --- 运行参数（CLI/环境变量可覆盖） ---
     loop_minutes: float = 10
     loop_interval: float = 2.0
