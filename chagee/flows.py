@@ -228,6 +228,8 @@ def single_run(auths, config=None, run_log=None, notifier=None):
             any_error = True
     if notifier is not None:
         notifier.notify_report("result", report)
+        for label, items in report.items():
+            notifier.notify_account(label, items)
     return report, any_error
 
 
@@ -586,6 +588,15 @@ class LoopRunner:
         extra = ["波次 %d, 请求 %d" % (wave_count, len(self.events)),
                  "事件明细 %s" % (self.events_path or "未落盘")]
         self.notifier.notify_report("result", report, extra_lines=extra)
+        # 再按账号各发一条领取详情；同一张券多次尝试时取最后一次的时刻
+        last_try = {}
+        for ev in self.events:
+            last_try[(ev.label, ev.coupon_name)] = (
+                ev.send_ts.split(" ")[-1], ev.elapsed)
+        for label, items in (report or {}).items():
+            timings = {name: value for (who, name), value
+                       in last_try.items() if who == label}
+            self.notifier.notify_account(label, items, timings=timings)
         expired = sorted({mask_label(label)
                           for label, items in (report or {}).items()
                           for item in items or []

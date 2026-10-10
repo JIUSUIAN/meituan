@@ -10,8 +10,9 @@
 3. **可注入**——session 与 smtp_factory 都能替换（与 ApiClient 同样的做法），
    测试全 mock，不发真实请求。
 
-事件由 `notify_events` 过滤：result 抢券结果 / auth_expired 登录态失效 /
-health 健康检查异常 / rate_limited 命中限流 / error 运行异常。
+事件由 `notify_events` 过滤：result 整体结果 / account_result 单账号领取详情
+（一账号一条）/ auth_expired 登录态失效 / health 健康检查异常 /
+rate_limited 命中限流。
 """
 import base64
 import hashlib
@@ -50,6 +51,7 @@ SUCCESS_RULES = {
 
 EVENT_TITLES = {
     "result": "CHAGEE 抢券结果",
+    "account_result": "CHAGEE 账号领取详情",
     "auth_expired": "CHAGEE 登录态失效",
     "rate_limited": "CHAGEE 命中限流",
     "health": "CHAGEE 健康检查",
@@ -193,6 +195,30 @@ class Notifier:
         if statuses:
             body = "状态分布 %s\n%s" % (statuses, body)
         return self.notify(event, body)
+
+    def notify_account(self, label, items, timings=None, extra_lines=()):
+        """单账号一条消息：每张券一行，可带发送时刻/耗时/服务端最终状态。"""
+        who = (mask_label(label) if self.cfg.notify_mask_labels
+               else str(label))
+        lines = []
+        for item in items or []:
+            name = item.get("coupon") or "（无券名）"
+            status = item.get("status") or "?"
+            line = "%s: %s" % (name, status)
+            timing = (timings or {}).get(name)
+            if timing:
+                line += "（发送 %s，耗时 %.2fs）" % (timing[0], timing[1])
+            if item.get("grant_status"):
+                line += " 服务端 %s" % item["grant_status"]
+            detail = str(item.get("detail") or "").strip()
+            # granted 的 detail 是奖品 JSON，噪音大；只在非成功时带上原因
+            if detail and status != "granted":
+                line += " | %s" % self.secrets.redact(detail)[:80]
+            lines.append(line)
+        if not lines:
+            lines.append("无结果")
+        body = "\n".join([who] + lines + list(extra_lines))
+        return self.notify("account_result", body)
 
     # -- 各通道实现 -------------------------------------------------------
 

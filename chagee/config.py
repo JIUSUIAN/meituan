@@ -70,8 +70,9 @@ class Config:
     # 通道名：telegram / feishu / dingtalk / serverchan / email / webhook
     notify_targets: tuple = ()
     notify_enabled: bool = True       # --no-notify 可临时关掉
-    # 只发这些事件，避免高频打扰
-    notify_events: tuple = ("result", "auth_expired", "health")
+    # 只发这些事件，避免高频打扰；account_result = 每账号单独一条领取详情，
+    # 不想要逐条推送就把它从这里去掉
+    notify_events: tuple = ("result", "account_result", "auth_expired", "health")
     notify_timeout: float = 5.0
     notify_mask_labels: bool = True   # 通知里掩掉 label 中的手机号等长数字
     telegram_bot_token: str = ""
