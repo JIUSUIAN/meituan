@@ -111,6 +111,41 @@ class SaveAuthTmpHardeningTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 账号标识：优先取自 cookie 里的手机号（P_INFO），显式 label 仍优先
+# ---------------------------------------------------------------------------
+
+class LabelFromCookieTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _write(self, data, name="cookies.json"):
+        p = self.dir / name
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return p
+
+    def test_label_derived_from_p_info_phone(self):
+        import urllib.parse
+        p_info = urllib.parse.quote("phone=17712347689&ts=1")
+        self._write(dict(AUTH, cookies={"P_INFO": p_info}))
+        auth = load_auth("cookies.json", base_dir=self.dir)
+        self.assertEqual("177****7689", auth["label"])
+
+    def test_explicit_label_still_wins(self):
+        import urllib.parse
+        p_info = urllib.parse.quote("phone=17712347689")
+        self._write(dict(AUTH, label="自定义", cookies={"P_INFO": p_info}))
+        auth = load_auth("cookies.json", base_dir=self.dir)
+        self.assertEqual("自定义", auth["label"])
+
+    def test_no_phone_falls_back_to_file_name(self):
+        self._write(dict(AUTH, cookies={"JSESSIONID": "j"}))
+        auth = load_auth("cookies.json", base_dir=self.dir)
+        self.assertEqual("cookies.json", auth["label"])
+
+
+# ---------------------------------------------------------------------------
 # P0b：loop 退出码必须反映实质失败
 # ---------------------------------------------------------------------------
 

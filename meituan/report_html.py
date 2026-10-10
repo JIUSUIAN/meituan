@@ -264,26 +264,63 @@ def render_account(label, items, timings=None, extra_lines=(), meta="",
                  footer or meta or "")
 
 
+def _coupon_list(items):
+    """账号内**全部**券的明细表：券名 + 状态（已领到的状态用亮色）。
+
+    汇总页不再把每账号截断成两张卡——所有券（含领到的）都列出来，
+    避免超过两张时被静默丢弃，也让「券名」可见。"""
+    rows = []
+    for item in items or []:
+        status = str((item or {}).get("status") or "?")
+        color = STATUS_COLORS.get(status, "#6b7280")
+        name = str((item or {}).get("coupon") or "（无券名）")
+        rows.append(
+            '<tr><td style="padding:7px 8px;border-bottom:1px solid #f0e6cf;'
+            'font-size:12px;color:#1f2329">' + escape(name) + '</td>'
+            '<td align="right" style="padding:7px 8px;'
+            'border-bottom:1px solid #f0e6cf;font-size:12px;font-weight:700;'
+            'color:' + color + ';white-space:nowrap">'
+            + escape(STATUS_TEXTS.get(status, status)) + '</td></tr>')
+    if not rows:
+        return '<div style="font-size:12px;color:#8a6a1f">无券</div>'
+    return ('<table role="presentation" width="100%" cellspacing="0" '
+            'cellpadding="0" style="border-collapse:collapse;margin:2px 0 4px">'
+            + "".join(rows) + '</table>')
+
+
+def _account_block(label, items):
+    """一个账号的区块：账号名 + 领到张数 + 该账号全部券的明细。"""
+    items = list(items or [])
+    lit = sum(1 for it in items if _is_lit(it))
+    badge = ('<span style="color:#0b8457">领到 %d 张</span>' % lit if lit
+             else '<span style="color:#8a8f98">未领到</span>')
+    return ('<div style="margin:12px 0 2px;font-size:13px;color:#8a6a1f;'
+            'font-weight:700">账号 ' + escape(str(label)) + ' · ' + badge
+            + '</div>' + _coupon_list(items))
+
+
 def render_summary(report, extra_lines=(), meta="", footer=None, title=None):
-    """汇总页：全局状态分布 + 每账号一组紧凑双券卡。"""
+    """汇总页：全局状态分布 + 每账号「全部券 + 状态」明细。
+
+    每个账号列出它**全部**的券（不再只取两张卡位），并标注领到张数，
+    这样「哪些券领到了、分别在哪个账号上」一目了然。"""
     report = report or {}
     counts = {}
     blocks = []
+    total_items = 0
+    lit_total = 0
     for label, items in report.items():
-        for item in items or []:
-            status = str(item.get("status") or "?")
+        items = list(items or [])
+        total_items += len(items)
+        for item in items:
+            status = str((item or {}).get("status") or "?")
             counts[status] = counts.get(status, 0) + 1
-        slots = _slots(items)
-        cards, lit = _cards_block(slots, None, compact=True)
-        blocks.append(
-            '<div style="font-size:12px;color:#8a6a1f;font-weight:700;'
-            'margin:10px 0 2px">账号 ' + escape(str(label)) + '</div>' + cards)
+            if _is_lit(item):
+                lit_total += 1
+        blocks.append(_account_block(label, items))
     if not blocks:
         blocks.append('<div style="font-size:13px;color:#8a6a1f">'
                       '无账号结果</div>')
-    total_items = sum(len(v or []) for v in report.values())
-    lit_total = sum(1 for v in report.values() for it in (v or [])
-                    if _is_lit(it))
     headline, color = _headline(lit_total, total_items)
     body = _stat_chips(counts) + "".join(blocks) + _list(extra_lines)
     return _page(headline, color, title or "抢券结果汇总", body,

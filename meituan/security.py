@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 import time
+import urllib.parse
 from collections import Counter
 from pathlib import Path
 
@@ -109,6 +110,26 @@ def _cleanup_orphan_tmp(p):
             pass
 
 
+def _phone_from_cookies(cookies):
+    """从 cookie 里解析账号手机号：P_INFO / S_INFO / NTES_YD_PASSPORT 常含
+    URL 编码的手机号（实测 P_INFO 稳定携带）。解析不到返回 None。"""
+    for name in ("P_INFO", "S_INFO", "NTES_YD_PASSPORT"):
+        raw = next((v for n, v in cookies.items()
+                    if n.lower() == name.lower() and v), None)
+        if not raw:
+            continue
+        text = urllib.parse.unquote(str(raw))
+        m = re.search(r"(?<!\d)(1[3-9]\d{9})(?!\d)", text)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _mask_phone(phone):
+    """手机号掩码：前 3 后 4（与常见手写 label 形态一致，如 177****7689）。"""
+    return phone[:3] + "****" + phone[-4:]
+
+
 def _normalize_entry(entry, p, path, index=None, secrets=None):
     """单条账号字典 -> 归一化 auth：cookies 形态归一、鉴权字段反推、必填校验、
     顶层与 cookies 对齐、权限警告、登记脱敏。错误只报文件名与字段名，不报值。"""
@@ -149,8 +170,13 @@ def _normalize_entry(entry, p, path, index=None, secrets=None):
         except OSError:
             pass
     if not auth.get("label"):
-        # 数组条目没写 label 就用 文件名#序号，保证账号标识唯一且可追溯
-        auth["label"] = path if index is None else "%s#%d" % (path, index)
+        # 账号标识优先取自 cookie 里的手机号（脱敏成 前3****后4），保证「按 cookie
+        # 识别账号」；解析不到才退回 文件名#序号
+        phone = _phone_from_cookies(cookies)
+        if phone:
+            auth["label"] = _mask_phone(phone)
+        else:
+            auth["label"] = path if index is None else "%s#%d" % (path, index)
     auth["_auth_file"] = str(p.resolve())
     if index is not None:
         # 多账号单文件：回写时按此序号就地更新本条，不动其他账号

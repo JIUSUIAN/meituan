@@ -271,6 +271,13 @@ def _single_run_accounts(auths, cfg, log, report):
                         statuses = {}
                     for c in coupons:
                         name = c.coupon_name
+                        # 只处理目标券时，探针券（如满28减10）直接跳过：既不领取
+                        # 也不进报告，保证「返回的」与「实际做的」一致
+                        if cfg.single_run_snipe_only and \
+                                cfg.snipe_keyword not in name:
+                            log("[%s] %s -> 跳过（非 %s 目标券）"
+                                % (label, name, cfg.snipe_keyword))
+                            continue
                         if statuses.get(c.coupon_id) == "GRANTED":
                             outcomes.append({
                                 "coupon": name, "status": "already_claimed",

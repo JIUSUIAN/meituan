@@ -314,6 +314,58 @@ class SingleRunTest(unittest.TestCase):
         self.assertFalse(any_error)
         self.assertEqual(report["acc-1"][0]["status"], "granted")
 
+    def test_single_run_snipe_only_skips_non_target(self):
+        """single_run_snipe_only=True：探针券（满28减10）既不领取也不进报告。"""
+        cfg = Config(single_run_snipe_only=True)
+        granted = []
+
+        def grant_handler(body):
+            granted.append(body["superCouponId"])
+            return {"code": 200, "result": {"winPrizeInfo": {"p": 1}}}
+
+        brand_coupons = {
+            "code": 200,
+            "result": {"brands": [{
+                "brandId": "b1", "brandName": "霸王茶姬",
+                "superCoupons": [
+                    {"couponId": "c1", "couponName": "【5折外卖券】立减20",
+                     "couponType": "PHONE_REWARD"},
+                    {"couponId": "c2", "couponName": "【外卖券】满28减10",
+                     "couponType": "PHONE_REWARD"},
+                ]}]}}
+        self._patch({
+            cfg.info_path: brand_coupons,
+            cfg.grant_status_path: {"code": 200, "result": {"grantItems": []}},
+            cfg.grant_path: grant_handler,
+        })
+        report, any_error = flows.single_run([dict(AUTH)], config=cfg)
+        self.assertFalse(any_error)
+        self.assertEqual([i["coupon"] for i in report["acc-1"]],
+                         ["【5折外卖券】立减20"])
+        self.assertEqual(granted, ["c1"])   # 探针券没有被领取
+
+    def test_single_run_snipe_only_false_keeps_all(self):
+        """默认 False：单次执行仍覆盖品牌下全部可领券。"""
+        cfg = Config()                       # single_run_snipe_only 默认 False
+        self.assertFalse(cfg.single_run_snipe_only)
+        brand_coupons = {
+            "code": 200,
+            "result": {"brands": [{
+                "brandId": "b1", "brandName": "霸王茶姬",
+                "superCoupons": [
+                    {"couponId": "c1", "couponName": "【5折外卖券】立减20",
+                     "couponType": "PHONE_REWARD"},
+                    {"couponId": "c2", "couponName": "【外卖券】满28减10",
+                     "couponType": "PHONE_REWARD"},
+                ]}]}}
+        self._patch({
+            cfg.info_path: brand_coupons,
+            cfg.grant_status_path: {"code": 200, "result": {"grantItems": []}},
+            cfg.grant_path: {"code": 200, "result": {"winPrizeInfo": {"p": 1}}},
+        })
+        report, _ = flows.single_run([dict(AUTH)], config=cfg)
+        self.assertEqual(len(report["acc-1"]), 2)
+
 
 class StderrAndRetryTest(unittest.TestCase):
     """收尾批次：日志走 stderr、默认 session 连接级重试。"""

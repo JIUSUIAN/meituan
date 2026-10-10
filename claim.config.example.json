@@ -9,6 +9,8 @@
   "sustained_inflight": 2,
   "rate_limit_backoff": 60,
   "soldout_stop_after": 3,
+  "single_run_snipe_only": false,
+  "_single_run说明": "true = 单次执行只处理含 snipe_keyword 的目标券，探针券（如满28减10）不领取也不进报告；默认 false 覆盖品牌下全部可领券",
   "loop_minutes": 10,
   "loop_interval": 2.0,
   "fire_lead": 0.3,

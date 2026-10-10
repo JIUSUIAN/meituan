@@ -33,6 +33,10 @@ class Config:
          "couponName": "【5折外卖券】立减25", "couponType": "PHONE_REWARD"},
     ])
     snipe_keyword: str = "5折"        # 只抢含该关键词的券
+    # 单次执行也只处理含 snipe_keyword 的券：探针券（如「满28减10」）不进单次报告，
+    # 既不领取也不返回，结果与实际动作保持一致。
+    # 默认 False = 单次执行覆盖品牌下全部可领券（不怕阵容变化）
+    single_run_snipe_only: bool = False
     skip_types: tuple = ("PLACEHOLDER", "DIRECT_LINK")
     soldout_stop_after: int = 3       # 连续抢光 N 次则停止重试该券
 

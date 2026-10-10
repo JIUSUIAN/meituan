@@ -138,7 +138,7 @@ meituan --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stde
 
 | 模式 | 做什么 | 副作用 | 报告状态 | 退出码 |
 |---|---|---|---|---|
-| 单次（默认） | 拉列表 → 查已领状态 → **逐张尝试所有可领券** | 会真领 | 每账号一组 `{coupon, status, detail}` | 任一账号执行异常 → 1 |
+| 单次（默认） | 拉列表 → 查已领状态 → **逐张尝试所有可领券**（`single_run_snipe_only=true` 时只处理 `snipe_keyword` 目标券） | 会真领 | 每账号一组 `{coupon, status, detail}` | 任一账号执行异常 → 1 |
 | `--loop` | 只抢目标券（默认两张 5 折），波次重试直到全有结论或超时 | 会真领 | 同上 + `grant_status` | 任一 `auth_expired`/`error` → 1 |
 | `--ping` | 只调 info + grant-status 两个只读接口 | 无 | `reachable` / `expired` / `unknown` / `error: ...` | 任一 `expired`/`error` → 1 |
 | `--verify-session` | 用探针券试领一次，证明登录态 | **有**（当天探针券未领会领掉一张） | `authenticated` / `expired` / `unknown` / `error: ...` | 有任一非 `authenticated` → 1 |
@@ -146,8 +146,11 @@ meituan --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stde
 - `--ping` 与 `--verify-session` 互斥。
 - 只读接口不校验登录，所以 `--ping` **不会**谎报 `authenticated`；想确认登录态用
   `--verify-session`（已领过返回 803 仍判 `authenticated`，幂等）。
-- 单次模式与 loop 的目标不同：单次覆盖品牌下全部可领券（不怕阵容变化），
+- 单次模式与 loop 的目标不同：单次默认覆盖品牌下全部可领券（不怕阵容变化），
   loop 只打 `snipe_keyword` 命中的券，把第一波火力留给目标。
+  想让单次也只看目标券（例如把探针券「满28减10」排除出报告），
+  开 `single_run_snipe_only=true`——被排除的券**既不领取也不返回**，
+  保证 stdout 报告与实际动作一致。
 
 ---
 
@@ -507,6 +510,9 @@ python -m compileall -q meituan tests tools claim.py
 
 ## 14. 版本与演进
 
+`1.19.0` 新增 `single_run_snipe_only` 配置：单次执行只处理 `snipe_keyword`
+命中的目标券，探针券（如「满28减10」）既不领取也不进报告；默认 False
+仍覆盖品牌下全部可领券；
 `1.18.0` 项目主体从 CHAGEE 改为**美团**：包目录 `chagee/` → `meituan/`、控制台脚本
 `chagee` → `meituan`、环境变量前缀 `CHAGEE_` → `MEITUAN_`（旧前缀仍兼容）、通知文案
 与邮件报告页全部以美团为主体；接口匹配串 `brand_keyword=霸王茶姬`、
