@@ -4,8 +4,8 @@
 多账号并发、整点定时开抢、限流退避、会话凭据自动跟随，并把结果输出成可管道解析的 JSON。
 
 - 语言/依赖：Python ≥ 3.9，`requests`（Windows 另需 `tzdata`；邮件走标准库 `smtplib`）
-- 版本：`1.11.0`（真源 `chagee/__init__.py:__version__`）
-- 测试：180 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
+- 版本：`1.12.0`（真源 `chagee/__init__.py:__version__`）
+- 测试：187 个，全部 mock，不访问真实第三方接口（通知通道用假 session / 假 SMTP）
 - 节奏与参数以**实测成功日志**为准（2026-10-09 23:59 那次整点抢：4 张券全中、响应 1.78~3.17s）
 
 ---
@@ -263,7 +263,7 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
 ```json
 {
   "notify_targets": ["telegram", "feishu"],
-  "notify_events": ["result", "auth_expired", "health"],
+  "notify_events": ["result", "account_result", "auth_expired", "health"],
   "notify_mask_labels": true,
   "telegram_bot_token": "123456789:AA...",
   "telegram_chat_id": "我的 chat id",
@@ -271,13 +271,26 @@ chagee --loop 2>/dev/null > result.json   # stdout 只有 JSON，日志在 stder
 }
 ```
 
-**什么时候发**（`notify_events` 过滤，默认只发这三类，避免高频打扰）：
+**什么时候发**（`notify_events` 过滤，默认发这四类，其他一律不打扰）：
 
 | 事件 | 触发点 | 内容 |
 |---|---|---|
-| `result` | `--loop` 收尾、单次执行结束 | 状态分布 + 每账号结果 + 波次/请求数 + 事件明细路径 |
+| `result` | `--loop` 收尾、单次执行结束 | 汇总一条：状态分布 + 每账号结果 + 波次/请求数 + 事件明细路径 |
+| `account_result` | 同上，**每个账号一条** | 该账号的领取详情：每张券一行（券名、状态、发送时刻、耗时、服务端最终状态、失败原因） |
 | `auth_expired` | 报告里出现 873 | 哪些账号会话失效，以及「重新登录 → 导出 → `--merge` → `--verify-session`」的恢复步骤 |
 | `health` | `--ping` / `--verify-session` **有异常账号时** | 异常账号与状态；全部正常时不打扰 |
+
+单账号详情条的实样（三账号就是三条，外加一条汇总）：
+
+```
+CHAGEE 账号领取详情
+177****89
+【5折外卖券】立减20: granted（发送 23:59:59.70，耗时 1.78s） 服务端 GRANTED
+【5折外卖券】立减25: out_of_stock | code=60001: 已抢光
+```
+
+嫌逐条太吵就把 `account_result` 从 `notify_events` 去掉，只留汇总那条；
+`send_ts`/耗时来自 JSONL 同源的事件表，同一张券多次尝试时取最后一次的时刻。
 
 三条实现边界：
 
@@ -379,7 +392,7 @@ chagee/
   notify.py              Notifier：Telegram/飞书/钉钉/Server酱/邮件/通用 webhook
   flows.py               ping / verify_session / single_run / LoopRunner（步骤方法化）
 tools/import_cookie_export.py  扩展导出 -> 认证文件（支持并入数组）
-tests/                   180 个 unittest（全部 mock）
+tests/                   187 个 unittest（全部 mock）
 .github/workflows/ci.yml 多版本 Python 测试 + compileall + 凭据入库守卫
 ```
 
@@ -417,6 +430,7 @@ python -m compileall -q chagee tests tools claim.py
 
 ## 14. 版本与演进
 
+`1.12.0` 通知支持单账号领取详情逐条推送（`account_result` 事件，含发送时刻/耗时/服务端状态）；
 `1.11.0` 消息通知模块（Telegram/飞书/钉钉/Server酱/邮件/通用 webhook）与四模式接入；
 `1.10.0` 多账号单文件与按条目回写、自适应并发、`send_ts` 精度、`--fire-lead`；
 `1.9.0` 凭据 `.tmp` 加固、退出码、CLI 前置校验、探针券单一真源、JSONL、pyproject+CI；
