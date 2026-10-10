@@ -79,6 +79,28 @@ def _filter_accounts(auths, spec, ap):
     return kept
 
 
+def _notify_test(cfg, ap):
+    """按配置的通道发一条测试消息——验证 token/webhook/自建邮箱是否真能送达。"""
+    notifier = Notifier.from_config(cfg)
+    if not notifier.enabled:
+        notifier.close()
+        ap.error("没有可用通知通道（notify_targets 为空，或 notify_enabled=false/"
+                 "--no-notify）")
+    try:
+        if "temp_email" in notifier.targets and cfg.temp_email_api_url:
+            ok, detail = notifier.probe_service()
+            print("health_check: %s %s" % ("OK" if ok else "失败", detail),
+                  file=sys.stderr)
+        results = notifier.notify("test", "这是一条 chagee 通知测试消息。",
+                                 force=True)
+    finally:
+        notifier.close()
+    print(json.dumps({ch: {"ok": ok, "detail": msg}
+                      for ch, ok, msg in results},
+                     ensure_ascii=False, indent=2))
+    return 0 if results and all(ok for _, ok, _ in results) else 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="claim.py")
     ap.add_argument("--loop", action="store_true", help="循环抢券模式（并发+错峰）")
@@ -99,6 +121,8 @@ def main(argv=None):
                     help="强制开启通知（按配置的 notify_targets 通道发送）")
     ap.add_argument("--no-notify", dest="notify", action="store_false",
                     default=None, help="本次运行不发送通知")
+    ap.add_argument("--notify-test", dest="notify_test", action="store_true",
+                    help="按配置的通道发一条测试消息后退出（校验通道可用性）")
     ap.add_argument("--ping", action="store_true",
                     help="只读健康检查：仅调用 info/grant-status 只读接口，"
                          "无业务副作用；无法证明登录态时返回 reachable")
@@ -123,6 +147,10 @@ def main(argv=None):
         ap.error("抢券目标为空（关键词 %r 未匹配到任何固定券），"
                  "loop 会空转到超时——请检查 snipe_keyword / fixed_coupons"
                  % cfg.snipe_keyword)
+
+    # 通知自检不需要凭据文件，先于账号加载
+    if args.notify_test:
+        return _notify_test(cfg, ap)
 
     auths = _load_auths(cfg)
     if args.accounts:

@@ -22,9 +22,10 @@
   指定账号：    python3 claim.py --loop --accounts 小号
                 只跑匹配 label/认证文件名的账号（逗号分隔可多选）。
   消息通知：    配置 notify_targets = ["telegram","feishu","dingtalk",
-                "serverchan","email","webhook"] 里的任意几个，
-                收尾结果 / 登录态失效 / 健康检查异常会推送到这些通道；
-                --no-notify 临时关掉，--notify 强制打开。
+                "serverchan","email","temp_email","webhook"] 里的任意几个，
+                收尾汇总 / 每账号领取详情 / 登录态失效 / 健康检查异常会推送到
+                这些通道；--no-notify 临时关掉，--notify 强制打开，
+                --notify-test 发一条测试消息（自建邮箱会先探 /health_check）。
   凭据文件：    cookies.json 可以是单个账号对象，也可以是多账号数组
                 （每条自带 label；轮换回写只更新自己那一条）。
   配置文件：    可选 claim.config.json（本目录，字段见 chagee/config.Config），

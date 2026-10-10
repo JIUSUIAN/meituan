@@ -92,6 +92,15 @@ class Config:
     email_from: str = ""
     email_to: tuple = ()
     email_subject_prefix: str = ""
+    # cloudflare_temp_email 自建服务（收信 + Cloudflare 发信绑定）：
+    # 填了 temp_email_admin_auth 走 /admin/send_mail（需 from_mail），
+    # 否则用地址 JWT 走 /api/send_mail（发件人即该地址）
+    temp_email_api_url: str = ""      # 例 https://temp-email.example.com
+    temp_email_admin_auth: str = ""   # 管理密码（x-admin-auth 头）
+    temp_email_jwt: str = ""          # 普通地址的 JWT，二选一
+    temp_email_from_mail: str = ""    # 管理员模式必填
+    temp_email_from_name: str = "chagee 抢券"
+    temp_email_to_mails: tuple = ()   # 指定通知邮箱，可多个
 
     # --- 运行参数（CLI/环境变量可覆盖） ---
     loop_minutes: float = 10
