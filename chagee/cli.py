@@ -87,6 +87,9 @@ def main(argv=None):
                     help="每轮间隔秒数（默认 2.0，可被配置/环境变量覆盖）")
     ap.add_argument("--fire-at", type=_fire_at, default=None,
                     help="开火时刻 HH:MM[:SS[.毫秒]]，到点才打第一波（已过则立即开火）")
+    ap.add_argument("--fire-lead", type=float, default=None,
+                    help="开火提前量秒数（补偿首波网络往返；整点抢实测响应 "
+                         "1.8~3.2s，建议 0.3）")
     ap.add_argument("--config", default=None,
                     help="JSON 配置文件路径（默认同目录 claim.config.json，存在才读）")
     ap.add_argument("--accounts", default=None,
@@ -106,6 +109,7 @@ def main(argv=None):
         "loop_minutes": args.minutes,
         "loop_interval": args.interval,
         "fire_at": args.fire_at,
+        "fire_lead": args.fire_lead,
     })
 
     # 配置层校验先于凭据加载：配置写错时不该先去读 cookies 文件

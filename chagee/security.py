@@ -148,8 +148,9 @@ def _normalize_entry(entry, p, path, index=None, secrets=None):
                       % (path, mode & 0o777), file=sys.stderr)
         except OSError:
             pass
-    auth.setdefault("label",
-                    path if index is None else "%s#%d" % (path, index))
+    if not auth.get("label"):
+        # 数组条目没写 label 就用 文件名#序号，保证账号标识唯一且可追溯
+        auth["label"] = path if index is None else "%s#%d" % (path, index)
     auth["_auth_file"] = str(p.resolve())
     if index is not None:
         # 多账号单文件：回写时按此序号就地更新本条，不动其他账号
@@ -261,6 +262,13 @@ def _atomic_write_json(p, data):
         except OSError:
             pass
         raise
+
+
+def write_auth_file(data, path):
+    """原子写入整个认证文件（单对象或多账号数组），POSIX 下收紧 600 权限。
+
+    轮换回写不要用这个（整体覆盖会抹掉同文件其他账号），用 update_auth_cookies。"""
+    _atomic_write_json(path, data)
 
 
 def save_auth(auth, path):
