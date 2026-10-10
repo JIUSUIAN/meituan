@@ -139,7 +139,7 @@ class RotationTest(unittest.TestCase):
         client.coupon_info()
         self.assertEqual(events, ["JSESSIONID"])
 
-    def test_persist_writes_file_atomically_stripping_internals(self):
+    def test_persist_updates_entry_in_place(self):
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / "cookies.json"
             f.write_text(json.dumps(auth_with_cookie()), encoding="utf-8")
@@ -152,8 +152,8 @@ class RotationTest(unittest.TestCase):
             client.coupon_info()
             saved = json.loads(f.read_text(encoding="utf-8"))
             self.assertEqual(saved["cookies"]["JSESSIONID"], NEW_JSID)
-            self.assertNotIn("_auth_file", saved)          # 内部字段剔除
-            self.assertNotIn("label", saved)               # label 由路径推导
+            self.assertNotIn("_auth_file", saved)   # 内部字段不落盘
+            self.assertEqual("acc-1", saved["label"])  # 其余字段原样保留
             self.assertFalse(list(f.parent.glob("*.tmp")))  # 临时文件已 rename
 
     def test_persist_disabled_keeps_memory_only(self):

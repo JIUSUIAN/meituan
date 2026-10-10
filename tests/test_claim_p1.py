@@ -435,15 +435,18 @@ class CouponModelTest(unittest.TestCase):
         from chagee.flows import try_grant
         from chagee.models import Coupon
         client = ApiClient(dict(AUTH), session=RoutingSession({}))
-        status, _ = try_grant(client, "b",
-                              Coupon(coupon_id="x", coupon_type="PLACEHOLDER"))
+        status, _, send_ts = try_grant(client, "b",
+                                       Coupon(coupon_id="x",
+                                              coupon_type="PLACEHOLDER"))
         self.assertEqual(status, "skipped")
-        status, detail = try_grant(client, "b",
-                                   Coupon(coupon_id="x", coupon_type="DIRECT_LINK",
-                                          direct_link="http://jump"))
+        self.assertIsNone(send_ts)   # 没发请求就没有发送时刻
+        status, detail, _ = try_grant(client, "b",
+                                      Coupon(coupon_id="x",
+                                             coupon_type="DIRECT_LINK",
+                                             direct_link="http://jump"))
         self.assertEqual(status, "direct_link")
         self.assertIn("jump", detail)
-        status, _ = try_grant(client, "b",
+        status, _, _ = try_grant(client, "b",
                               Coupon(coupon_id="x", left_stock=0))
         self.assertEqual(status, "out_of_stock")
 

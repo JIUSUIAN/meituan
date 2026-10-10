@@ -191,7 +191,8 @@ class GrantStatusMappingTest(unittest.TestCase):
     def _grant_with_code(self, code):
         client = make_client([make_response(
             200, {"code": code, "errmsg": "err-%s" % code})])
-        return flows.try_grant(client, "brand-1", COUPON)
+        status, detail, _ = flows.try_grant(client, "brand-1", COUPON)
+        return status, detail
 
     def test_803_already_claimed(self):
         status, _ = self._grant_with_code(803)
@@ -216,14 +217,14 @@ class GrantStatusMappingTest(unittest.TestCase):
 
     def test_transport_error_not_business_status(self):
         client = make_client([requests.ConnectionError("down")])
-        status, detail = flows.try_grant(client, "b", COUPON)
+        status, detail, _ = flows.try_grant(client, "b", COUPON)
         self.assertEqual(status, "failed")
         self.assertIn("传输错误", detail)
 
     def test_granted_success(self):
         client = make_client([make_response(
             200, {"code": 200, "result": {"winPrizeInfo": {"prize": "券"}}})])
-        status, detail = flows.try_grant(client, "b", COUPON)
+        status, detail, _ = flows.try_grant(client, "b", COUPON)
         self.assertEqual(status, "granted")
         self.assertIn("券", detail)
 
