@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .config import DIR, Config, load_config
 from .flows import beijing_ts, loop_run, ping, single_run, verify_session
-from .security import load_auth
+from .security import load_auths
 
 # 开火时刻：HH:MM[:SS[.毫秒]]，秒可省略
 FIRE_AT_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?$")
@@ -49,12 +49,13 @@ def _fire_at(value):
 
 
 def _load_auths(cfg):
-    """加载全部账号凭据。配置里显式写了却不存在的文件要警告——
-    静默跳过会让人以为在双账号并发，实际只跑了单账号。"""
+    """加载全部账号凭据（一个文件可是单对象，也可是多账号数组）。
+    配置里显式写了却不存在的文件要警告——静默跳过会让人以为在双账号并发，
+    实际只跑了单账号。"""
     auths = []
     for f in cfg.auth_files:
         if (DIR / f).exists():
-            auths.append(load_auth(f, base_dir=DIR))
+            auths.extend(load_auths([f], base_dir=DIR))
         elif f not in Config.auth_files:
             print("警告: 配置指定的认证文件不存在，已跳过: %s" % f,
                   file=sys.stderr)

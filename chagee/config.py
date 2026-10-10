@@ -33,11 +33,13 @@ class Config:
     skip_types: tuple = ("PLACEHOLDER", "DIRECT_LINK")
     soldout_stop_after: int = 3       # 连续抢光 N 次则停止重试该券
 
-    # --- 节奏参数（与 P0 前完全一致，勿随意调） ---
+    # --- 节奏参数（实测值，勿随意调）---
     refresh_every: float = 30         # 抢券期间列表刷新间隔（秒）
     first_wave_gap: float = 0.05      # 第一波任意两次 grant 最小间隔（秒）
     sustained_gap: float = 0.5        # 后续波次间隔（秒）
-    first_wave_inflight: int = 4      # 第一波最多同时在飞请求数
+    # 第一波在飞上限：账号数 × 目标券数（实测 2 账号 4 并发、3 账号 6 并发，
+    # 单波都在 0.15s 内打完且不触发 40007；跨波持续高频才会撞限流）
+    first_wave_inflight: int = 6
     sustained_inflight: int = 2       # 后续波次在飞上限
     rate_limit_backoff: float = 60    # 命中限流后的退避秒数
 
@@ -68,6 +70,9 @@ class Config:
     loop_minutes: float = 10
     loop_interval: float = 2.0
     fire_at: Optional[str] = None
+    # 开火提前量（秒）：整点抢的响应在 1.8~3.2s，把请求提前发出去补偿网络往返；
+    # 0 表示严格按 fire_at 发出
+    fire_lead: float = 0.0
     burst_test: bool = False          # CHAGEE_BURST_TEST=1：跳过安全模式切换
 
     @property

@@ -15,7 +15,7 @@ from .config import Config
 from .cookies import CookieStore
 from .errors import ApiError, ApiParseError, ApiTransportError
 from .models import Coupon
-from .security import GLOBAL_SECRETS, save_auth
+from .security import GLOBAL_SECRETS, update_auth_cookies
 
 
 class ApiClient:
@@ -144,8 +144,11 @@ class ApiClient:
                 auth_file = self.auth.get("_auth_file")
                 if auth_file:
                     try:
-                        save_auth(self.auth, auth_file)
-                    except OSError:
+                        # 多账号单文件按 _auth_index 就地更新本条，
+                        # 整体覆盖会抹掉同文件里的其他账号
+                        update_auth_cookies(self.auth["cookies"], auth_file,
+                                            index=self.auth.get("_auth_index"))
+                    except (OSError, ValueError):
                         pass  # 回写失败不影响本次请求；下次轮换再试
         if self.on_rotate is not None:
             for name in changed:

@@ -136,8 +136,8 @@ def verify_session(auths, config=None, log_path=None):
         t0 = time.time()
         try:
             with ApiClient(auth, config=cfg) as client:
-                status, detail = try_grant(client, cfg.fixed_brand_id, probe,
-                                           config=cfg)
+                status, detail, _ = try_grant(client, cfg.fixed_brand_id, probe,
+                                              config=cfg)
             if status in ("granted", "already_claimed", "out_of_stock"):
                 # 60001=会话有效只是没库存，同样证明登录态正常
                 report[label] = "authenticated"
@@ -160,31 +160,38 @@ def verify_session(auths, config=None, log_path=None):
 # ---------------------------------------------------------------------------
 
 def try_grant(client, brand_id, coupon, pacing=None, config=None):
-    """尝试领取一张券（coupon: models.Coupon），返回 (status, detail)。
+    """尝试领取一张券（coupon: models.Coupon），返回 (status, detail, send_ts)。
 
-    pacing 提供时走限速+在飞闸门；status 取自 GRANT_CODE_STATUS 映射
-    或 granted/failed，未知 code 保留原码不误分类。"""
+    pacing 提供时走限速+在飞闸门；send_ts 是**实际发出 POST 前**的时刻
+    （限速与闸门都等到之后才取，未发请求时为 None）——第一波发送时刻统计
+    靠它才看得出错峰效果。status 取自 GRANT_CODE_STATUS 映射或 granted/failed，
+    未知 code 保留原码不误分类。"""
     cfg = config or client.config
     if coupon.sold_out():
-        return "out_of_stock", "已抢光"
+        return "out_of_stock", "已抢光", None
     if coupon.coupon_type in cfg.skip_types:
         if coupon.coupon_type == "PLACEHOLDER":
-            return "skipped", "占位券（敬请期待）"
-        return "direct_link", "需跳转领取：%s" % coupon.direct_link
+            return "skipped", "占位券（敬请期待）", None
+        return ("direct_link", "需跳转领取：%s" % coupon.direct_link, None)
+    send_ts = None
     try:
         if pacing is not None:
             with pacing.slot():
+                send_ts = beijing_ts()  # 限速等待后、POST 前的精确时刻
                 grant_result = client.grant(brand_id, coupon)
         else:
+            send_ts = beijing_ts()
             grant_result = client.grant(brand_id, coupon)
         prize = (grant_result or {}).get("winPrizeInfo") or grant_result
-        return "granted", client.secrets.redact(str(prize))[:200]
+        return ("granted", client.secrets.redact(str(prize))[:200], send_ts)
     except ApiError as e:
         return (classify_grant_error(e),
                 "code=%s: %s" % (e.code,
-                                 client.secrets.redact(e.message)[:200]))
+                                 client.secrets.redact(e.message)[:200]),
+                send_ts)
     except ApiTransportError as e:
-        return "failed", "传输错误: %s" % client.secrets.redact(str(e))[:200]
+        return ("failed", "传输错误: %s" % client.secrets.redact(str(e))[:200],
+                send_ts)
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +256,7 @@ def _single_run_accounts(auths, cfg, log, report):
                                 % (label, name))
                             continue
                         t1 = time.time()
-                        status, detail = try_grant(
+                        status, detail, _ = try_grant(
                             client, brand["brandId"], c, config=cfg)
                         log("[%s] %s -> %s (%.2fs): %s" %
                             (label, name, status, time.time() - t1,
@@ -269,9 +276,12 @@ def _single_run_accounts(auths, cfg, log, report):
     return any_error
 
 
-def wait_until(target_str):
+def wait_until(target_str, lead=0.0):
     """等到目标时刻（HH:MM[:SS[.毫秒]]，按 Asia/Shanghai 解析，不受系统时区影响）
-    再返回；目标已过则直接返回。最后 5ms 忙等，保证毫秒级精度。"""
+    再返回；目标已过则直接返回。最后 5ms 忙等，保证毫秒级精度。
+
+    lead>0 表示提前 lead 秒开火（整点抢的响应实测 1.8~3.2s，用提前量补偿
+    网络往返，让请求在整点那一刻已经到达服务端）。"""
     tz = ZoneInfo("Asia/Shanghai")
     now_bj = datetime.now(tz)  # 取北京时间的日期，避免系统时区干扰
     parts = target_str.split(":")
@@ -282,11 +292,13 @@ def wait_until(target_str):
     target_dt = datetime(now_bj.year, now_bj.month, now_bj.day,
                          h, m, int(sec), int((sec - int(sec)) * 1e6),
                          tzinfo=tz)
-    target = target_dt.timestamp()
+    target = target_dt.timestamp() - max(lead, 0.0)
     delta = target - time.time()
     if delta <= 0:
         return
-    print("等待 %.1fs 至 %s（北京时间）准时开抢..." % (delta, target_str),
+    print("等待 %.1fs 至 %s（北京时间）准时开抢%s..." %
+          (delta, target_str,
+           "，提前 %.2fs 补偿网络往返" % lead if lead > 0 else ""),
           file=sys.stderr, flush=True)
     # 剩余时长用单调钟锚定：Windows 上 time.time 分辨率约 15ms，
     # 忙等段若继续比对 time.time 可能整体偏移一个 tick
@@ -352,6 +364,10 @@ class LoopRunner:
             for a in auths}
         self.backoff_until = {a["label"]: 0.0 for a in auths}
         self.soldout_streak = {a["label"]: {} for a in auths}  # cid -> 连续抢光次数
+        # 线程池规模随账号数与目标券数走：每账号的领取任务 + 1 个刷新任务，
+        # 再留 1 余量（2 账号×2 券 -> 7，3 账号 -> 10；实际领取仍由在飞闸门限）
+        per_account = max((len(t) for t in self.targets.values()), default=0)
+        self.pool_workers = len(self.auths) * (per_account + 1) + 1
 
     # -- 子任务 -----------------------------------------------------------
 
@@ -399,10 +415,12 @@ class LoopRunner:
             if cid in self.done[label] or time.time() < self.backoff_until[label]:
                 return
         t0 = time.time()
-        send_ts = beijing_ts()  # 发送时刻（百分之一秒）
-        status, detail = try_grant(self.clients[label], brand_id, coupon,
-                                   pacing=self.pacing, config=self.cfg)
+        status, detail, send_ts = try_grant(self.clients[label], brand_id,
+                                            coupon, pacing=self.pacing,
+                                            config=self.cfg)
         elapsed = time.time() - t0
+        if not send_ts:
+            send_ts = beijing_ts()  # 未实际发请求（售罄/占位跳过）时占位
         with self.lock:
             self.events.append(GrantEvent(send_ts, label, name, status, elapsed))
             if status in ("granted", "already_claimed"):
@@ -481,7 +499,7 @@ class LoopRunner:
                 log("[%s] 预热完成" % label)
             except Exception as e:
                 log("[%s] 预热失败: %s" % (label, str(e)[:80]))
-        wait_until(self.fire_at)
+        wait_until(self.fire_at, self.cfg.fire_lead)
         log("开火！")
 
     def _build_wave_tasks(self):
