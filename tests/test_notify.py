@@ -17,7 +17,7 @@ from chagee import flows
 from chagee.config import Config, load_config
 from chagee.models import Coupon
 from chagee.notify import (CHANNELS, REQUIRED, Notifier, account_mails,
-                           dingtalk_signed_url, mask_label,
+                           account_routing, dingtalk_signed_url, mask_label,
                            register_config_secrets)
 from chagee.security import GLOBAL_SECRETS
 
@@ -413,8 +413,9 @@ class _RecordingNotifier:
         self.events.append((event, report))
 
     def notify_account(self, label, items, timings=None, extra_lines=(),
-                       to_mails=None):
-        self.events.append(("account_result", label, items, timings, to_mails))
+                       to_mails=None, targets=None):
+        self.events.append(("account_result", label, items, timings,
+                            to_mails, targets))
 
 
 class PerAccountNotifyTest(unittest.TestCase):
@@ -589,7 +590,22 @@ class FlowsWiringTest(unittest.TestCase):
         runner._notify({"老号": [{"status": "granted"}]}, wave_count=1)
         accounts = [e for e in notifier.events if e[0] == "account_result"]
         self.assertEqual(("a@x.com",), accounts[0][4])
-        self.assertIsNone(runner._account_mails("没这个账号"))
+        self.assertIsNone(accounts[0][5])          # 通道沿用全局
+        self.assertEqual((None, None), runner._account_routing("没这个账号"))
+
+    def test_loop_routes_account_channel_from_notify_spec(self):
+        auth = {"label": "老号", "GL-XSRF-TOKEN": "t", "GOD_UUID": "u",
+                "device_id": "d", "cookies": {},
+                "notify": {"targets": ["dingtalk"], "to": ["a@x.com"]}}
+        runner = flows.LoopRunner([auth], config=Config(), minutes=0.01,
+                                  interval=0.01)
+        self.addCleanup(lambda: [c.close() for c in runner.clients.values()])
+        notifier = _RecordingNotifier()
+        runner.notifier = notifier
+        runner._notify({"老号": [{"status": "granted"}]}, wave_count=1)
+        accounts = [e for e in notifier.events if e[0] == "account_result"]
+        self.assertEqual(("dingtalk",), accounts[0][5])
+        self.assertEqual(("a@x.com",), accounts[0][4])
 
 
 class NotifyConfigTest(unittest.TestCase):
@@ -638,37 +654,85 @@ class NotifyConfigTest(unittest.TestCase):
 
 
 class CliNotifyTest(unittest.TestCase):
-    def test_notify_test_forces_event_and_returns_zero(self):
+    def setUp(self):
+        GLOBAL_SECRETS.clear()
+        self.addCleanup(GLOBAL_SECRETS.clear)
+
+    def _run(self, cfg, accounts, enabled=True, results=None):
         from chagee import cli
         sent = []
 
         class Stub:
             targets = ("email",)
-            enabled = True
+
+            def __init__(self):
+                self.enabled = enabled
 
             @classmethod
-            def from_config(cls, cfg):
+            def from_config(cls, c):
                 return cls()
 
             def notify(self, event, text, title=None, force=False,
-                       to_mails=None):
-                sent.append((event, force, to_mails))
-                return [("email", True, "已发送")]
+                       to_mails=None, targets=None):
+                sent.append({"event": event, "force": force,
+                             "to_mails": to_mails, "targets": targets})
+                return list(results or [("email", True, "已发送")])
 
             def close(self):
                 pass
 
-        cfg = Config(notify_targets=("email",),
-                     email_to=("you@example.com",))
+        out = io.StringIO()
         with mock.patch.object(cli, "Notifier", Stub), \
-                mock.patch.object(cli, "load_auths", return_value=[]):
-            out = io.StringIO()
+                mock.patch.object(cli, "load_auths", return_value=accounts):
             with contextlib.redirect_stdout(out), \
                     contextlib.redirect_stderr(io.StringIO()):
                 code = cli._notify_test(cfg, argparse.ArgumentParser())
+        return code, sent, out.getvalue()
+
+    def test_global_send_uses_configured_recipients(self):
+        cfg = Config(notify_targets=("email",), email_to=("you@example.com",))
+        code, sent, _ = self._run(cfg, accounts=[])
         self.assertEqual(0, code)
-        self.assertEqual([("test", True, ("you@example.com",))], sent)
-        self.assertIn("email", out.getvalue())
+        self.assertEqual([("test", True, ("you@example.com",), None)],
+                         [(s["event"], s["force"], s["to_mails"], s["targets"])
+                          for s in sent])
+
+    def test_each_routed_account_gets_its_own_send(self):
+        cfg = Config(notify_targets=("email",), email_to=("you@example.com",))
+        accounts = [
+            {"label": "老号", "notify": {"targets": ["email"],
+                                        "to": ["a@x.com"]}},
+            {"label": "钉钉号", "notify": {"targets": ["dingtalk"]}},
+            {"label": "没配路由"},
+        ]
+        code, sent, out = self._run(cfg, accounts)
+        self.assertEqual(3, len(sent))          # 全局 1 条 + 有路由的 2 个账号
+        self.assertEqual(("email",), sent[1]["targets"])
+        self.assertEqual(("a@x.com",), sent[1]["to_mails"])
+        self.assertEqual(("dingtalk",), sent[2]["targets"])
+        self.assertIsNone(sent[2]["to_mails"])
+        self.assertIn("老号", out)              # 结果按账号分组
+        self.assertIn("钉钉号", out)
+        self.assertEqual(0, code)
+
+    def test_failure_makes_exit_code_one(self):
+        cfg = Config(notify_targets=("email",), email_to=("you@example.com",))
+        code, _, _ = self._run(cfg, [], results=[("email", False, "HTTP 500")])
+        self.assertEqual(1, code)
+
+    def test_only_account_routing_still_sends(self):
+        """全局没配通道但账号自带路由：路由本身就是发送意图，照样自检。"""
+        accounts = [{"label": "老号", "notify_mail": "a@x.com"}]
+        code, sent, _ = self._run(Config(notify_targets=(), email_to=()),
+                                  accounts, enabled=False)
+        self.assertEqual(1, len(sent))
+        self.assertEqual(("a@x.com",), sent[0]["to_mails"])
+        self.assertEqual(0, code)
+
+    def test_notify_test_errors_when_nothing_configurable(self):
+        with self.assertRaises(SystemExit):
+            self._run(Config(notify_targets=(), email_to=()), accounts=[],
+                      enabled=False)
 
     def test_notify_test_errors_when_no_channel(self):
         from chagee import cli
@@ -765,24 +829,80 @@ class RegisterSecretsTimingTest(unittest.TestCase):
         GLOBAL_SECRETS.clear()
 
 
-    def test_collect_test_mails_merges_global_and_per_account(self):
-        from chagee import cli
-        cfg = Config(email_to=("global@example.com",))
-        with mock.patch.object(cli, "load_auths", return_value=[
-                {"label": "老号", "notify_mail": "a@x.com"},
-                {"label": "小号", "notify_mail": ["b@x.com", "c@x.com"]},
-                {"label": "没邮箱"}]):
-            self.assertEqual(
-                ("global@example.com", "a@x.com", "b@x.com", "c@x.com"),
-                cli._collect_test_mails(cfg))
+class AccountRoutingTest(unittest.TestCase):
+    """账号条目里的 notify 对象：这个账号的详情走哪条通道、发给谁。"""
 
-    def test_collect_test_mails_survives_missing_credentials(self):
-        from chagee import cli
-        with mock.patch.object(cli, "load_auths",
-                               side_effect=FileNotFoundError("没有凭据文件")):
-            self.assertEqual(("g@example.com",),
-                             cli._collect_test_mails(
-                                 Config(email_to=("g@example.com",))))
+    def test_full_spec(self):
+        targets, to = account_routing(
+            {"label": "老号", "notify": {"targets": ["email"],
+                                        "to": ["a@x.com", "b@x.com"]}})
+        self.assertEqual(("email",), targets)
+        self.assertEqual(("a@x.com", "b@x.com"), to)
+
+    def test_targets_accepts_single_string_and_aliases(self):
+        self.assertEqual((("dingtalk",), None),
+                         account_routing({"notify": {"targets": "dingtalk"}}))
+        self.assertEqual((("webhook",), None),
+                         account_routing({"notify": {"channel": "webhook"}}))
+
+    def test_shorthand_notify_mail(self):
+        targets, to = account_routing({"label": "小号", "notify_mail": "c@x.com"})
+        self.assertIsNone(targets)                 # 通道沿用全局
+        self.assertEqual(("c@x.com",), to)
+
+    def test_no_spec_means_global(self):
+        self.assertEqual((None, None), account_routing({"label": "老号"}))
+
+    def test_bad_spec_warns_and_falls_back(self):
+        warns = []
+        targets, to = account_routing({"label": "老号", "notify": "email"},
+                                      warn=warns.append)
+        self.assertEqual((None, None), (targets, to))
+        self.assertEqual(1, len(warns))
+        self.assertIn("老号", warns[0])
+
+    def test_notifier_sends_only_to_account_targets(self):
+        GLOBAL_SECRETS.clear()
+        self.addCleanup(GLOBAL_SECRETS.clear)
+        session = FakeSession()
+        cfg = cfg_with(notify_targets=("telegram", "feishu"),
+                       dingtalk_webhook=DING,
+                       notify_events=("account_result",))
+        notifier = Notifier(config=cfg, session=session, log=lambda m: None)
+        results = notifier.notify_account("老号", [{"coupon": "券",
+                                                    "status": "granted"}],
+                                          targets=("dingtalk",))
+        self.assertEqual([("dingtalk", True, "已发送")], results)
+        self.assertEqual(1, len(session.calls))
+        self.assertIn("/robot/send", session.calls[0]["url"])
+
+    def test_account_targets_work_without_global_targets(self):
+        """全局通道列表为空、但账号指定了 dingtalk：按账号意图发送。"""
+        GLOBAL_SECRETS.clear()
+        self.addCleanup(GLOBAL_SECRETS.clear)
+        session = FakeSession()
+        cfg = cfg_with(notify_targets=(), dingtalk_webhook=DING,
+                       notify_events=("account_result",))
+        notifier = Notifier(config=cfg, session=session, log=lambda m: None)
+        self.assertFalse(notifier.enabled)          # 全局事件没有去处
+        results = notifier.notify_account("老号", [{"coupon": "券",
+                                                    "status": "granted"}],
+                                          targets=("dingtalk",))
+        self.assertTrue(results[0][1], results[0])
+
+    def test_unknown_account_channel_warns_and_skips(self):
+        GLOBAL_SECRETS.clear()
+        self.addCleanup(GLOBAL_SECRETS.clear)
+        session = FakeSession()
+        lines = []
+        cfg = cfg_with(notify_targets=("telegram",),
+                       notify_events=("account_result",))
+        notifier = Notifier(config=cfg, session=session, log=lines.append)
+        results = notifier.notify_account("老号", [{"status": "granted"}],
+                                          targets=("飞书机器人",))
+        self.assertEqual([], results)
+        self.assertTrue(any("无法识别" in l for l in lines))
+        self.assertEqual([], session.calls)
 
 
 if __name__ == "__main__":
