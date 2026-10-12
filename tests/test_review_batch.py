@@ -332,12 +332,17 @@ class ProbeCouponTest(unittest.TestCase):
         self.assertEqual(1, cfg_src.count(probe_id))
         self.assertNotIn(probe_id, flows_src)
 
-    def test_verify_session_requires_probe(self):
+    def test_verify_session_no_probe_needed(self):
+        # userInfo 探针不需要探针券：即使 fixed_coupons 里没有 28-10 也不报错
         cfg = Config(fixed_coupons=[
             {"couponId": "c1", "couponName": "【5折外卖券】立减20",
              "couponType": "PHONE_REWARD"}])
-        with self.assertRaises(ValueError):
-            flows.verify_session([dict(AUTH, label="acc-1")], config=cfg)
+        self.assertIsNone(cfg.probe_coupon)
+        with mock.patch.object(flows.ApiClient, "userinfo",
+                               return_value={}):
+            report = flows.verify_session([dict(AUTH, label="acc-1")],
+                                          config=cfg)
+        self.assertEqual(report["acc-1"], "authenticated")
 
     def test_ping_requires_probe(self):
         cfg = Config(fixed_coupons=[

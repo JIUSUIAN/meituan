@@ -252,9 +252,10 @@ class AdaptiveConcurrencyTest(unittest.TestCase):
         return runner
 
     def test_pool_workers_scale_with_accounts(self):
-        # 每账号（2 张目标券 + 1 个刷新任务）+ 1 余量：2 账号 -> 7，3 账号 -> 10
-        self.assertEqual(7, self._runner(2).pool_workers)
-        self.assertEqual(10, self._runner(3).pool_workers)
+        # 每账号（3 张目标券：2 张5折 + 满28减10 + 1 个刷新任务）+ 1 余量：
+        # 2 账号 -> 9，3 账号 -> 13
+        self.assertEqual(9, self._runner(2).pool_workers)
+        self.assertEqual(13, self._runner(3).pool_workers)
 
     def test_one_client_per_account_label(self):
         runner = self._runner(3)

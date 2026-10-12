@@ -175,21 +175,22 @@ class EarlyStopTest(unittest.TestCase):
         return [auth("号%d" % i) for i in range(3)]
 
     def test_all_soldout_stops_after_confirmation_wave(self):
-        """首波 6 发全 60001，确认波仍全 60001 -> 第 2 波后收工（12 次请求）。"""
+        """首波 6 发全 60001，确认波 9 发全 60001 -> 第 2 波后收工（15 次请求）。"""
         self.routes.update(self._base_routes(SOLDOUT))
         cfg = Config(early_stop_all_soldout=True)
         report = flows.loop_run(self._auths(), config=cfg,
                                 minutes=0.5, interval=0.05)
-        self.assertEqual(12, self._grant_calls())
+        self.assertEqual(15, self._grant_calls())
         for items in report.values():
             self.assertTrue(all(i["status"] == "out_of_stock" for i in items))
 
     def test_disabled_runs_original_logic(self):
-        """开关关闭时走原逻辑：连续 3 次抢光才停（18 次请求）。"""
+        """开关关闭时走原逻辑：连续 3 次抢光才停。
+        28-10 从第 2 波加入，抢光计数滞后一波 -> 6+9+9+3=27 次请求。"""
         self.routes.update(self._base_routes(SOLDOUT))
         cfg = Config(early_stop_all_soldout=False)
         flows.loop_run(self._auths(), config=cfg, minutes=0.5, interval=0.05)
-        self.assertEqual(18, self._grant_calls())
+        self.assertEqual(27, self._grant_calls())
 
     def test_granted_in_wave2_does_not_trigger(self):
         """确认波出现 granted（非全抢光）-> 不提前收工，继续正常循环。"""
@@ -204,8 +205,35 @@ class EarlyStopTest(unittest.TestCase):
         self.routes.update(self._base_routes(grant_handler))
         cfg = Config(early_stop_all_soldout=True)
         flows.loop_run(self._auths(), config=cfg, minutes=0.5, interval=0.05)
-        # 第 1 波 6 发 + 第 2 波 6 发 + 第 3 波 5 发（1 张已 granted）= 17
-        self.assertEqual(17, self._grant_calls())
+        # 第 1 波 6 发 + 第 2 波 9 发 + 第 3 波 5 发（4 张已 granted）= 20
+        self.assertEqual(20, self._grant_calls())
+
+    def test_28_10_joins_from_wave2(self):
+        """满28减10不进第一波（5折 6 发逐字节不变），从第二波跟进并领到。"""
+        seen = []
+        c_28_10 = "6a5f1a1d4d7fef55f1590b26"
+
+        def grant_handler(body):
+            cid = body.get("superCouponId")
+            seen.append(cid)
+            if cid == c_28_10:
+                return {"code": 200, "result": {"winPrizeInfo": {"p": 1}}}
+            return SOLDOUT
+
+        self.routes.update(self._base_routes(grant_handler))
+        cfg = Config(early_stop_all_soldout=True)
+        report = flows.loop_run(self._auths(), config=cfg,
+                                minutes=0.5, interval=0.05)
+        # 第 1 波 6 发全是 5折（无 28-10）
+        self.assertEqual(6, len([c for c in seen[:6] if c != c_28_10]))
+        self.assertNotIn(c_28_10, seen[:6])
+        # 28-10 在第 2 波出现并全部 granted
+        self.assertIn(c_28_10, seen[6:15])
+        for items in report.values():
+            got_28_10 = [i for i in items
+                         if "满28减10" in i["coupon"] and
+                         i["status"] == "granted"]
+            self.assertEqual(1, len(got_28_10))
 
 
 if __name__ == "__main__":

@@ -151,12 +151,13 @@ def main(argv=None):
                     help="只读健康检查：仅调用 info/grant-status 只读接口，"
                          "无业务副作用；无法证明登录态时返回 reachable")
     ap.add_argument("--verify-session", action="store_true",
-                    help="会话验证：有业务副作用！尝试领取探针券以证明登录态，"
-                         "若探针券当天未领会实际领掉一张")
+                    help="会话验证：只读无副作用，调 userInfo 接口验证登录态 "
+                         "(873=过期)")
     args = ap.parse_args(argv)
 
     if args.ping and args.verify_session:
-        ap.error("--ping 与 --verify-session 互斥（前者只读，后者有副作用）")
+        ap.error("--ping 与 --verify-session 互斥（两者都是只读探针，"
+                 "verify-session 额外校验登录态）")
 
     cfg = load_config(path=args.config, overrides={
         "loop_minutes": args.minutes,

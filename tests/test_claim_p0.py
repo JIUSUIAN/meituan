@@ -49,6 +49,15 @@ class FakeSession:
             raise item
         return item
 
+    def get(self, url, headers=None, timeout=None):
+        self.calls.append({"url": url, "headers": headers})
+        if not self.script:
+            raise AssertionError("mock 响应脚本已用尽: %s" % url)
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
     def close(self):
         pass
 
@@ -253,7 +262,7 @@ class GrantStatusQueryTest(unittest.TestCase):
 
 
 class PingTest(unittest.TestCase):
-    """T02：--ping 只读、无副作用；--verify-session 显式承担副作用。"""
+    """T02：--ping 只读；--verify-session 改走 userInfo 只读探针，无副作用。"""
 
     def setUp(self):
         GLOBAL_SECRETS.clear()
@@ -314,17 +323,37 @@ class PingTest(unittest.TestCase):
         self.assertTrue(report["test-account"].startswith("error"))
 
     def test_verify_session_authenticated(self):
-        # 探针券返回 803（已领取）-> 证明登录态为 authenticated
+        # userInfo 返回 200 -> authenticated（只读，无领券副作用）
         api_client.requests.Session = lambda: FakeSession([
-            make_response(200, {"code": 803, "errmsg": "已领取"})])
+            make_response(200, {"code": 200,
+                                "result": {"user": {"nick": "测试"}}})])
         report = flows.verify_session([fresh_auth()], log_path=None)
         self.assertEqual(report["test-account"], "authenticated")
 
     def test_verify_session_expired(self):
+        # userInfo 返回 873 -> expired（2026-10-12 真实伪造过期会话实测）
         api_client.requests.Session = lambda: FakeSession([
-            make_response(200, {"code": 873, "errmsg": "重新登录"})])
+            make_response(200, {"code": 873, "errmsg": "你离开太久了"})])
         report = flows.verify_session([fresh_auth()], log_path=None)
         self.assertEqual(report["test-account"], "expired")
+
+    def test_verify_session_unknown_on_rate_limit(self):
+        api_client.requests.Session = lambda: FakeSession([
+            make_response(200, {"code": 40007, "errmsg": "操作频繁"})])
+        report = flows.verify_session([fresh_auth()], log_path=None)
+        self.assertEqual(report["test-account"], "unknown")
+
+    def test_verify_session_uses_userinfo_path(self):
+        # 只调 userInfo GET，不碰 grant 接口（无副作用回归）
+        cfg = Config()
+        sess = FakeSession([make_response(
+            200, {"code": 200, "result": {}})])
+        api_client.requests.Session = lambda: sess
+        flows.verify_session([fresh_auth()], config=cfg, log_path=None)
+        self.assertEqual(1, len(sess.calls))
+        self.assertEqual(cfg.base_url + cfg.userinfo_path,
+                         sess.calls[0]["url"])
+        self.assertNotIn("data", sess.calls[0])  # GET 无 body
 
 
 class VerifySessionPathTest(unittest.TestCase):
