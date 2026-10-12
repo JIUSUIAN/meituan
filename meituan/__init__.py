@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""meituan：网易大神 partner-perks 美团外卖券领券自动化包。
+"""meituan：网易大神 partner-perks 霸王茶姬领券自动化包。
 
 模块：
   cli.py        命令行入口（claim.py 为薄启动器）
@@ -15,4 +15,4 @@
   flows.py      业务流程：ping / verify_session / single_run / LoopRunner
 """
 
-__version__ = "1.19.0"
+__version__ = "1.20.0"

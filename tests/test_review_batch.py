@@ -20,10 +20,10 @@ from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from chagee import cli, flows
-from chagee.config import Config, load_config
-from chagee.models import GrantEvent
-from chagee.security import load_auth, save_auth
+from meituan import cli, flows
+from meituan.config import Config, load_config
+from meituan.models import GrantEvent
+from meituan.security import load_auth, save_auth
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -324,9 +324,9 @@ class ProbeCouponTest(unittest.TestCase):
 
     def test_probe_id_defined_once_and_not_in_flows(self):
         probe_id = Config().probe_coupon["couponId"]
-        cfg_src = (REPO_ROOT / "chagee" / "config.py").read_text(
+        cfg_src = (REPO_ROOT / "meituan" / "config.py").read_text(
             encoding="utf-8")
-        flows_src = (REPO_ROOT / "chagee" / "flows.py").read_text(
+        flows_src = (REPO_ROOT / "meituan" / "flows.py").read_text(
             encoding="utf-8")
         self.assertEqual(1, cfg_src.count(probe_id))
         self.assertNotIn(probe_id, flows_src)

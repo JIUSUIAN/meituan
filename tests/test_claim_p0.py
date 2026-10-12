@@ -11,13 +11,13 @@ from pathlib import Path
 
 import requests
 
-from chagee import api_client
-from chagee import flows
-from chagee.api_client import ApiClient
-from chagee.config import Config
-from chagee.errors import ApiError, ApiParseError, ApiTransportError, classify_grant_error
-from chagee.models import Coupon
-from chagee.security import GLOBAL_SECRETS, load_auth, redact
+from meituan import api_client
+from meituan import flows
+from meituan.api_client import ApiClient
+from meituan.config import Config
+from meituan.errors import ApiError, ApiParseError, ApiTransportError, classify_grant_error
+from meituan.models import Coupon
+from meituan.security import GLOBAL_SECRETS, load_auth, redact
 
 
 class FakeResponse:

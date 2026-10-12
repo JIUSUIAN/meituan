@@ -1,5 +1,5 @@
 {
-  "_说明": "复制为 claim.config.json 生效；字段真源见 chagee/config.Config。此处只列常调项。",
+  "_说明": "复制为 claim.config.json 生效；字段真源见 meituan/config.Config。此处只列常调项。",
   "auth_files": [
     "cookies.json"
   ],

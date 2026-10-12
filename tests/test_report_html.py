@@ -6,10 +6,10 @@
 """
 import unittest
 
-from chagee import report_html
-from chagee.config import Config
-from chagee.notify import Notifier
-from chagee.security import GLOBAL_SECRETS
+from meituan import report_html
+from meituan.config import Config
+from meituan.notify import Notifier
+from meituan.security import GLOBAL_SECRETS
 
 A = "【5折外卖券】立减20"
 B = "【5折外卖券】立减25"

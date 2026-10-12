@@ -13,13 +13,13 @@ from unittest import mock
 
 import requests
 
-from chagee import flows
-from chagee.config import Config, load_config
-from chagee.models import Coupon
-from chagee.notify import (CHANNELS, REQUIRED, Notifier, account_mails,
+from meituan import flows
+from meituan.config import Config, load_config
+from meituan.models import Coupon
+from meituan.notify import (CHANNELS, REQUIRED, Notifier, account_mails,
                            account_routing, dingtalk_signed_url, mask_label,
                            register_config_secrets)
-from chagee.security import GLOBAL_SECRETS
+from meituan.security import GLOBAL_SECRETS
 
 WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/abc123def456789"
 DING = "https://oapi.dingtalk.com/robot/send?access_token=DTOKEN123456789"
@@ -510,7 +510,7 @@ class FlowsWiringTest(unittest.TestCase):
         with mock.patch.object(flows, "ApiClient") as ac:
             ac.return_value.__enter__ = lambda s: s
             ac.return_value.coupon_info = lambda timeout=None: {}
-            from chagee.errors import ApiError
+            from meituan.errors import ApiError
             ac.return_value.grant_status = mock.Mock(
                 side_effect=ApiError(873, "重新登录"))
             report = flows.ping([auth], notifier=bad)
@@ -527,7 +527,7 @@ class FlowsWiringTest(unittest.TestCase):
         return runner
 
     def test_loop_notifies_result_per_account_and_auth_expired(self):
-        from chagee.models import GrantEvent
+        from meituan.models import GrantEvent
         runner = self._runner(["老号"])
         notifier = _RecordingNotifier()
         runner.notifier = notifier
@@ -630,7 +630,7 @@ class NotifyConfigTest(unittest.TestCase):
         self.assertTrue(cfg.notify_mask_labels)
 
     def test_cli_flag_disables_notify(self):
-        from chagee import cli
+        from meituan import cli
         captured = {}
         original = cli.Notifier
 
@@ -664,7 +664,7 @@ class CliNotifyTest(unittest.TestCase):
         self.addCleanup(GLOBAL_SECRETS.clear)
 
     def _run(self, cfg, accounts, enabled=True, results=None):
-        from chagee import cli
+        from meituan import cli
         sent = []
 
         class Stub:
@@ -740,7 +740,7 @@ class CliNotifyTest(unittest.TestCase):
                       enabled=False)
 
     def test_notify_test_errors_when_no_channel(self):
-        from chagee import cli
+        from meituan import cli
 
         class Disabled:
             enabled = False
@@ -823,7 +823,7 @@ class RegisterSecretsTimingTest(unittest.TestCase):
 
     def test_cli_registers_secrets_before_notifier_exists(self):
         """构造 Notifier 之前就登记：否则更早的失败路径可能把管理密码打出来。"""
-        from chagee import cli
+        from meituan import cli
         cfg = Config(notify_targets=("email",), email_password="SMTPAUTH123SECRET")
 
         class Boom:

@@ -326,6 +326,12 @@ def wait_until(target_str, lead=0.0):
     delta = target - time.time()
     if delta <= 0:
         return
+    # 跨零点保护：调用前若跨过了零点（如预热阶段耗时把日期推过了午夜），
+    # "今天"的目标会被算成明天此时（delta≈24h）。若昨天那次开火刚过去
+    # 不久（30 分钟内），视为已错过、立即开火，而不是再等 ~24 小时。
+    if delta > 12 * 3600 and time.time() - (target - 24 * 3600) < 30 * 60:
+        print("开火时刻已过（跨零点），立即开抢", file=sys.stderr, flush=True)
+        return
     print("等待 %.1fs 至 %s（北京时间）准时开抢%s..." %
           (delta, target_str,
            "，提前 %.2fs 补偿网络往返" % lead if lead > 0 else ""),
@@ -524,19 +530,46 @@ class LoopRunner:
             self.logger.log("时钟校验跳过: %s" % e)
 
     def _preheat_and_wait(self):
-        """预热连接后精确等待开火时刻（等待计入总时长之外）。"""
+        """预热连接后精确等待开火时刻（等待计入总时长之外）。
+
+        预热并行：各账号 grant_status 只读查询，并发打 3 个约 2s 收齐
+        （串行约 6.5s，曾卡着午夜线触发跨零点问题）。只读接口不进
+        grant 限流桶。"""
         log = self.logger.log
         log("预热连接...")
-        for auth in self.auths:
+        rtts = {}
+
+        def _one(auth):
             label = auth["label"]
+            t0 = time.perf_counter()
             try:
                 self.clients[label].grant_status(
                     [c.coupon_id for _, c in self.targets[label][:1]])
-                log("[%s] 预热完成" % label)
+                rtt = time.perf_counter() - t0
+                rtts[label] = rtt
+                log("[%s] 预热完成 (RTT %.2fs)" % (label, rtt))
             except Exception as e:
                 log("[%s] 预热失败: %s" % (label, str(e)[:80]))
-        wait_until(self.fire_at, self.cfg.fire_lead)
-        log("开火！")
+
+        with ThreadPoolExecutor(max_workers=len(self.auths)) as pool:
+            list(pool.map(_one, self.auths))
+        lead = self._adaptive_lead(rtts)
+        wait_until(self.fire_at, lead)
+        log("开火！(lead=%.2fs)" % lead)
+
+    def _adaptive_lead(self, rtts):
+        """用预热 RTT 自适应开火提前量，让请求落在 00:00:00 附近。
+
+        预热 RTT 含建连握手（约 0.6s），开火走复用连接，单程约
+        (RTT-0.6)/2。取中位数 * 0.2（保守系数，RTT=1.5s 时恰为已验证
+        的 0.3s），钳制在 [0.2, 0.6]：只在网络明显变慢时多提前，
+        网络快时不提前过头（避免请求在 00:00:00 之前到达）。
+        关闭开关或无预热数据时回退 fire_lead。
+        """
+        if not self.cfg.adaptive_lead or not rtts:
+            return self.cfg.fire_lead
+        med = sorted(rtts.values())[len(rtts) // 2]
+        return min(0.6, max(0.2, med * 0.2))
 
     def _build_wave_tasks(self):
         """本轮任务：两张5折券排前面优先并发发出。"""
@@ -653,6 +686,7 @@ class LoopRunner:
         cfg = self.cfg
         log = self.logger.log
         wave_count = 0
+        wave1_all_soldout = False  # 首波全抢光标记：确认波后决定是否提前收工
         try:
             log("并发抢券开始，持续 %s 分钟，间隔 %ss"
                 "（第一波%.2f秒极限%d并发只抢5折，后续%.1f秒安全模式）" %
@@ -676,17 +710,36 @@ class LoopRunner:
                                 pool.submit(self._refresh_one, auth)
                             last_refresh = time.time()
                         tasks = self._build_wave_tasks()
+                        events_before = len(self.events)
                         futs = [pool.submit(self._grant_one, auth, b, c)
                                 for (auth, b, c) in tasks]
                         log("第 %d 波开始，共 %d 个任务" % (wave_count + 1, len(tasks)))
                         for f in as_completed(futs):
                             f.result()
                         wave_count += 1
+                        wave_events = self.events[events_before:]
                         if wave_count == 1 and not cfg.burst_test:
                             # 第一波（极限速度）结束，切到安全模式防持续限流
                             self.pacing.enter_sustained_mode()
                             log("第一波结束，已切换到安全模式（%.1f秒间隔、最多%d并发）"
                                 % (cfg.sustained_gap, cfg.sustained_inflight))
+                        # 首波全抢光提前收工：每日一次投放，1 秒内抢完后不会补货；
+                        # 首波 6 发全 60001 说明已抢光，确认一波后直接收工，
+                        # 不再空转烧配额。有 granted/限流等非抢光状态则不触发。
+                        if (cfg.early_stop_all_soldout and wave_count == 1
+                                and wave_events and all(
+                                    e.status == "out_of_stock"
+                                    for e in wave_events)):
+                            wave1_all_soldout = True
+                            log("首波全抢光，下一波确认后若仍全抢光则提前收工")
+                        elif (cfg.early_stop_all_soldout and wave_count == 2
+                                and wave1_all_soldout):
+                            if (wave_events and all(
+                                    e.status == "out_of_stock"
+                                    for e in wave_events)):
+                                log("确认波全抢光，提前收工（券已抢完，不再消耗配额）")
+                                break
+                            wave1_all_soldout = False
                         # 判断机制：所有目标券都已有结论（已领/抢光停止）则提前退出
                         if self._all_settled():
                             log("所有券已有结论（已领/抢光停止），提前结束")

@@ -14,9 +14,9 @@ import time
 import unittest
 from unittest import mock
 
-from chagee import api_client
-from chagee import flows
-from chagee.config import Config
+from meituan import api_client
+from meituan import flows
+from meituan.config import Config
 
 AUTH = {
     "GL-XSRF-TOKEN": "tok-SECRET-abcdef123456",

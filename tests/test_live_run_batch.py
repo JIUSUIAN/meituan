@@ -22,12 +22,12 @@ from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from chagee import cli, flows
-from chagee.api_client import ApiClient
-from chagee.config import Config, load_config
-from chagee.models import Coupon
-from chagee.pacing import GrantPacing
-from chagee.security import load_auth, load_auths, update_auth_cookies
+from meituan import cli, flows
+from meituan.api_client import ApiClient
+from meituan.config import Config, load_config
+from meituan.models import Coupon
+from meituan.pacing import GrantPacing
+from meituan.security import load_auth, load_auths, update_auth_cookies
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

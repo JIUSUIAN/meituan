@@ -21,8 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chagee.config import DIR                        # noqa: E402
-from chagee.security import load_auths, write_auth_file  # noqa: E402
+from meituan.config import DIR                        # noqa: E402
+from meituan.security import load_auths, write_auth_file  # noqa: E402
 
 
 def collect_cookies(raw, domain=None):

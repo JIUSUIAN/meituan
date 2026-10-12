@@ -14,9 +14,6 @@ from typing import Optional
 DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_FILE = "claim.config.json"
 ENV_PREFIX = "MEITUAN_"
-# 主体从 CHAGEE 改成美团时，旧前缀继续接受（新前缀优先）——否则用户既有的
-# cron / 环境变量会静默失效，抢券行为悄悄回到默认值
-LEGACY_ENV_PREFIX = "CHAGEE_"
 
 
 @dataclass
@@ -115,6 +112,12 @@ class Config:
     # 开火提前量（秒）：整点抢的响应在 1.8~3.2s，把请求提前发出去补偿网络往返；
     # 0 表示严格按 fire_at 发出
     fire_lead: float = 0.0
+    # 是否用预热 RTT 自适应开火提前量：按当晚网络状况动态调整 lead，
+    # 让请求落在 00:00:00 附近；False 则固定用 fire_lead
+    adaptive_lead: bool = True
+    # 首波全抢光提前收工：第一波全部 60001（抢光）时，确认一波后直接收工，
+    # 不再空转烧配额（每日一次投放，1 秒内抢完后不会补货）
+    early_stop_all_soldout: bool = True
     burst_test: bool = False          # MEITUAN_BURST_TEST=1：跳过安全模式切换
 
     @property
@@ -172,9 +175,7 @@ def load_config(path=None, overrides=None):
         values.update(file_values)
 
     for f in fields(Config):
-        new_key = ENV_PREFIX + f.name.upper()
-        old_key = LEGACY_ENV_PREFIX + f.name.upper()
-        env_key = new_key if new_key in os.environ else old_key
+        env_key = ENV_PREFIX + f.name.upper()
         if env_key not in os.environ:
             continue
         if f.default is MISSING:

@@ -3,14 +3,14 @@
 按 `claim_P0_refactor_plan.md` 完成 P0（T01/T02/T03）与 P1（架构拆分）。
 并发、限流与抢券节奏参数保持原值不变。
 
-## 模块结构（已收敛为 chagee/ 包）
+## 模块结构（已收敛为 meituan/ 包）
 
 ```
 claim.py                 薄启动器（用法文档在此）
-pyproject.toml           包元数据 + 依赖 + console_scripts（chagee = chagee.cli:main）
-chagee/
+pyproject.toml           包元数据 + 依赖 + console_scripts（meituan = meituan.cli:main）
+meituan/
   cli.py                 命令行入口：参数解析、配置装配、分发到 flows
-  config.py              配置分层：dataclass 默认值 < claim.config.json < CHAGEE_* 环境变量 < CLI
+  config.py              配置分层：dataclass 默认值 < claim.config.json < MEITUAN_* 环境变量 < CLI
   security.py            T01：凭据加载（load_auth，支持浏览器导出格式）、登记与统一 redact
   errors.py              T03：ApiError / ApiTransportError / ApiParseError + 业务码集中映射
   cookies.py             CookieStore：单账号 Cookie 单一真源 + 服务端更新跟踪名单
@@ -31,8 +31,8 @@ tests/
 ```
 
 数据文件位置不变：`claim.config.json`、`cookies.json`、`cookies-new.json`
-仍在项目根目录（chagee/ 的上一级）。三种入口等价：
-`python claim.py ...`、`python -m chagee.cli ...`、`chagee ...`（`pip install -e .` 后）。
+仍在项目根目录（meituan/ 的上一级）。三种入口等价：
+`python claim.py ...`、`python -m meituan.cli ...`、`meituan ...`（`pip install -e .` 后）。
 
 ## P0 要点回顾
 
@@ -59,8 +59,8 @@ tests/
   `_log_summary` / `_finalize`）；`single_run`/`loop_run` 的重复日志闭包统一为
   `RunLogger`。
 - **配置分层**：所有节奏/超时/路径常量收敛到 `Config` dataclass；支持
-  `claim.config.json`（同目录，存在才读，未知字段报错）与 `CHAGEE_*` 环境变量；
-  `CHAGEE_BURST_TEST=1` 语义保留（映射到 `burst_test` 字段）。
+  `claim.config.json`（同目录，存在才读，未知字段报错）与 `MEITUAN_*` 环境变量；
+  `MEITUAN_BURST_TEST=1` 语义保留（映射到 `burst_test` 字段）。
 
 ## JSESSIONID 轮换跟踪（P1.5）
 
@@ -74,7 +74,7 @@ tests/
 - 同账号并发请求经每客户端小锁保护；Cookie 头合成保证基础对
   （GL-XSRF-TOKEN、GOD_UUID）恒在，扩展项（JSESSIONID 等）叠加。
 - 名单可配：`session_cookie_names`（默认 `("JSESSIONID",)`，可用
-  `CHAGEE_SESSION_COOKIE_NAMES=A,B` 或配置文件扩展）；
+  `MEITUAN_SESSION_COOKIE_NAMES=A,B` 或配置文件扩展）；
   `persist_rotated_cookies=False` 关闭回写（仅内存跟随）。
 - Session 失效（873）仍走既有路径：标记 `auth_expired` → 停止依赖旧会话；
   重建会话需人工重新登录后由 load_auth/回写流程搬运新凭据，脚本不自动重登。
@@ -146,11 +146,11 @@ tests/
 - **事件明细 JSONL**：收尾把 `GrantEvent` 追加写 `<run_log>.jsonl`，人读日志之外
   多一份机器可读副本，供事后复盘发送时刻/耗时分布（不含任何凭据）。
 - **`--verify-session` 闭环回显**：验证通过的账号回显认证文件路径（stderr）。
-- **环境变量覆盖守卫**：`CHAGEE_FIXED_COUPONS` 这类嵌套结构字段明确拒绝并给
+- **环境变量覆盖守卫**：`MEITUAN_FIXED_COUPONS` 这类嵌套结构字段明确拒绝并给
   可读报错，不再让 `Config(**values)` 炸出难懂的 TypeError。
 - **开火等待精度**：`wait_until` 的 sleep 段与最后 5ms 忙等改用 `perf_counter`
   单调钟锚定（Windows 上 `time.time` 分辨率约 15ms，会整体偏移一个 tick）。
-- **工程化**：`pyproject.toml`（依赖单一真源 + `chagee` 控制台脚本，`claim.py`
+- **工程化**：`pyproject.toml`（依赖单一真源 + `meituan` 控制台脚本，`claim.py`
   保留为兼容 shim）；测试归位 `tests/`；GitHub Actions CI 跑多版本 Python 全套
   mock 测试，并带「凭据文件绝不入库」守卫。
 - **会话重建工具**：`tools/import_cookie_export.py` 把浏览器扩展导出的 cookie
@@ -201,11 +201,11 @@ pip install -e .            # 或 pip install -r requirements.txt
 python -m unittest discover -s tests -t . -v
 
 # 日常
-chagee --ping                                    # 只读健康检查（cron 保活）
-chagee --verify-session --accounts cookies-new   # 验证新导出的凭据（有副作用）
-chagee --loop --fire-at 23:59:59.70 --fire-lead 0.3   # 整点抢（提前量补偿 RTT）
-chagee --loop --accounts 小号                     # 只跑数组文件里的某个账号
-chagee --loop 2>/dev/null > result.json          # stdout 只有 JSON 报告
+meituan --ping                                    # 只读健康检查（cron 保活）
+meituan --verify-session --accounts cookies-new   # 验证新导出的凭据（有副作用）
+meituan --loop --fire-at 23:59:59.70 --fire-lead 0.3   # 整点抢（提前量补偿 RTT）
+meituan --loop --accounts 小号                     # 只跑数组文件里的某个账号
+meituan --loop 2>/dev/null > result.json          # stdout 只有 JSON 报告
 
 # 多账号：一个文件放账号数组（每条写 label），或分文件列进 auth_files
 # cookies.json 结构：
@@ -223,14 +223,14 @@ python tools/import_cookie_export.py export.json --merge --label 小号        #
 .venv\Scripts\python.exe -m unittest discover -s tests -t .
 .venv\Scripts\python.exe claim.py --ping
 
-# 可选：CHAGEE_LOOP_MINUTES=5 python3 claim.py --loop
+# 可选：MEITUAN_LOOP_MINUTES=5 python3 claim.py --loop
 ```
 
 保活建议（cron / Windows 任务计划）：
 
 ```cron
 # 每 10 分钟只读探活；退出码 1 = 登录态失效或网络异常，可接告警
-*/10 * * * * cd /path/to/meituan && python3 claim.py --ping >> keepalive.cron.log 2>&1 || notify-send "CHAGEE 会话异常"
+*/10 * * * * cd /path/to/meituan && python3 claim.py --ping >> keepalive.cron.log 2>&1 || notify-send "MEITUAN 会话异常"
 ```
 
 `--ping` 只证明「网络与签名可用」（只读接口不校验登录，状态是 `reachable`
