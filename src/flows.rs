@@ -541,14 +541,17 @@ pub fn wait_until(target_str: &str, lead: f64) {
         Some(t) => now.date_naive().and_time(t).and_local_timezone(tz).unwrap(),
         None => return,
     };
-    let target_ts = target.timestamp() as f64 - lead.max(0.0);
-    let delta = target_ts - chrono::Utc::now().timestamp() as f64;
+    // 必须用微秒精度：timestamp() 只到整秒，会丢掉亚秒部分，导致开火
+    // 时刻最多偏晚 ~1s（实测偏晚 0.25~0.75s）；午夜场景下这可能是
+    // granted 与 60001 的区别。Python 版用 time.time() 无此问题。
+    let target_ts = target.timestamp_micros() as f64 / 1_000_000.0 - lead.max(0.0);
+    let now_ts = chrono::Utc::now().timestamp_micros() as f64 / 1_000_000.0;
+    let delta = target_ts - now_ts;
     if delta <= 0.0 {
         return;
     }
-    // 跨零点保护
-    if delta > 12.0 * 3600.0
-        && (chrono::Utc::now().timestamp() as f64) - (target_ts - 24.0 * 3600.0) < 30.0 * 60.0
+    // 跨零点保护（12h/30min 阈值下整秒精度足够，复用上面的 now_ts）
+    if delta > 12.0 * 3600.0 && now_ts - (target_ts - 24.0 * 3600.0) < 30.0 * 60.0
     {
         eprintln!("开火时刻已过（跨零点），立即开抢");
         return;
