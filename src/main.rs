@@ -85,11 +85,12 @@ struct Cli {
     #[arg(long)]
     notify_test: bool,
 
-    /// 只读健康检查：仅调用 info/grant-status，无业务副作用
+    /// 只读健康检查：仅调用 info/grant-status 只读接口，无业务副作用；
+    /// 无法证明登录态时返回 reachable
     #[arg(long, conflicts_with = "verify_session")]
     ping: bool,
 
-    /// 会话验证：有业务副作用！尝试领取探针券以证明登录态
+    /// 会话验证：只读无副作用，调 userInfo 接口验证登录态（873=过期）
     #[arg(long)]
     verify_session: bool,
 }

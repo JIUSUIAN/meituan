@@ -134,16 +134,15 @@ def ping(auths, config=None, log_path=None, notifier=None):
 
 
 def verify_session(auths, config=None, log_path=None, notifier=None):
-    """会话验证（有副作用！）：用探针券尝试一次领取来证明登录态。
+    """会话验证（只读，无副作用）：调 userInfo 接口验证登录态。
 
-    若当天探针券（满28减10）尚未领取，会实际领掉一张。
     每账号返回：authenticated / expired / unknown / error: ...
+    873 -> expired；200 -> authenticated；限流等其他业务码 -> unknown；
+    网络/解析失败 -> error。userInfo 同样返回 873 识别过期（2026-10-12 实测），
+    且不触碰任何券——旧的 grant 探针在探针券当天未领时会实际领掉一张，
+    已不再使用。
     """
     cfg = config or Config()
-    probe_cfg = cfg.probe_coupon
-    if not probe_cfg:
-        raise ValueError("配置里没有可用作探针的券（probe_coupon 为空）")
-    probe = Coupon.from_api(probe_cfg)
     report = {}
     log_lines = []
     for auth in auths:
@@ -151,18 +150,17 @@ def verify_session(auths, config=None, log_path=None, notifier=None):
         t0 = time.time()
         try:
             with ApiClient(auth, config=cfg) as client:
-                status, detail, _ = try_grant(client, cfg.fixed_brand_id, probe,
-                                              config=cfg)
-            if status in ("granted", "already_claimed", "out_of_stock"):
-                # 60001=会话有效只是没库存，同样证明登录态正常
-                report[label] = "authenticated"
-            elif status == "auth_expired":
+                client.userinfo()
+            report[label] = "authenticated"
+        except ApiError as e:
+            if e.code in AUTH_EXPIRED_CODES:
                 report[label] = "expired"
-            elif status == "rate_limited":
+            elif e.code == 40007:
                 report[label] = "unknown"  # 被限流挡在门外，无法判断登录态
             else:
-                report[label] = "error: " + detail[:120]
+                report[label] = "unknown"
         except Exception as e:
+            # 传输层/解析失败与其他意外一律归为 error，消息已脱敏限长
             report[label] = "error: " + str(e)[:120]
         log_lines.append("%s [%s] %s (%.2fs)" %
                          (beijing_ts(), label, report[label], time.time() - t0))
@@ -401,11 +399,12 @@ class LoopRunner:
         self.final = {a["label"]: {} for a in auths}      # couponName -> item
         # 每次grant事件：(发送时刻ts, 账号, 券名, 状态, 耗时)，用于收尾统计
         self.events = []
-        # 固定券直接就位，第一波零等待开抢；后台刷新只做增量合并（防阵容变化）
-        # 只抢5折券（snipe_coupons），满28减10不进目标
+        # 固定券直接就位：两张5折第一波极限开抢；满28减10不参与秒杀，
+        # 从第二波开始跟进（全天可领，无需极限速度；第一波保持冻结的
+        # 0.05s错峰+6并发，不给限流桶增加负担）
         self.targets = {
             a["label"]: [(self.cfg.fixed_brand_id, Coupon.from_api(c))
-                         for c in self.cfg.snipe_coupons]
+                         for c in self.cfg.fixed_coupons]
             for a in auths}
         self.backoff_until = {a["label"]: 0.0 for a in auths}
         self.soldout_streak = {a["label"]: {} for a in auths}  # cid -> 连续抢光次数
@@ -718,6 +717,12 @@ class LoopRunner:
                                 pool.submit(self._refresh_one, auth)
                             last_refresh = time.time()
                         tasks = self._build_wave_tasks()
+                        if wave_count == 0:
+                            # 第一波只打5折：冻结的最优策略（0.05s错峰+6并发），
+                            # 行为与之前逐字节一致；满28减10不争抢，
+                            # 从第二波开始跟进
+                            tasks = [t for t in tasks
+                                     if self._is_priority(t[2])]
                         events_before = len(self.events)
                         futs = [pool.submit(self._grant_one, auth, b, c)
                                 for (auth, b, c) in tasks]

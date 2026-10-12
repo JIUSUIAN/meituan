@@ -58,6 +58,9 @@ class Config:
     info_path: str = "/v1/web/exp-vip/external/super-coupon/info"
     grant_path: str = "/v1/web/exp-vip/external/super-coupon/grant"
     grant_status_path: str = "/v1/web/exp-vip/external/super-coupon/grant-status"
+    # 用户信息（只读 GET，无副作用）：登录态探针，比 grant-status 探针好——
+    # 后者在探针券当天未领时会实际领掉一张；userInfo 同样返回 873 识别过期
+    userinfo_path: str = "/v1/web/base/mine/userInfo"
 
     # --- 文件与凭据 ---
     auth_files: tuple = ("cookies.json", "cookies-new.json")
@@ -128,8 +131,10 @@ class Config:
 
     @property
     def probe_coupon(self):
-        """会话验证探针券：固定券里不属于抢券目标的那张（满28减10）。
+        """只读探针券：固定券里不含 snipe_keyword 的那张（满28减10）。
 
+        仅供 --ping 的 grant-status 只读探针使用；--verify-session 已改走
+        userInfo（无副作用），不再需要探针券。
         与 fixed_coupons 同源——券 ID 只有一处定义，避免两处漂移。
         没有符合条件的券时返回 None，调用方需明确报错而不是猜一个 ID。"""
         return next((c for c in self.fixed_coupons

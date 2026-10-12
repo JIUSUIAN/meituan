@@ -88,6 +88,20 @@ impl Stub {
     fn heads(&self) -> Vec<String> {
         self.heads.lock().unwrap().clone()
     }
+
+    /// 收到的全部请求体（无 body 的请求为 `None`），按到达顺序。
+    fn bodies(&self) -> Vec<Option<String>> {
+        self.heads
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|req| {
+                req.split_once("\r\n\r\n")
+                    .map(|(_, b)| b.trim().to_string())
+                    .filter(|b| !b.is_empty())
+            })
+            .collect()
+    }
 }
 
 fn info_body(coupons: Value) -> String {
@@ -412,4 +426,167 @@ fn signature_is_sha1_of_body_plus_xsrf() {
             .collect::<String>()
     };
     assert_eq!(checksum, expected, "GL-CheckSum 公式不符");
+}
+
+/// 固定券阵容里的券 ID（与 `Config::default()` 同源，测试内硬编码便于断言）。
+const CID_PROBE: &str = "6a5f1a1d4d7fef55f1590b26"; // 满28减10（非优先）
+const CID_CUT20: &str = "6a5f1a02f34ee33e0d7d9978"; // 5折 立减20（优先）
+const CID_CUT25: &str = "6a5f1a3df34ee33e0d7d9979"; // 5折 立减25（优先）
+
+#[test]
+fn verify_session_uses_readonly_userinfo_probe() {
+    // 回归：--verify-session 曾用 grant 探针（当天未领会实际领掉一张），
+    // 现改为只读 userInfo：必须只发一次 GET、无 body、不带签名/Content-Type
+    let stub = Stub::spawn(vec![(
+        "/base/mine/userInfo".into(),
+        r#"{"code":200,"result":{"user":{"nick":"测试"}}}"#.to_string(),
+    )]);
+    let secrets = SecretsRegistry::new();
+    let report = flows::verify_session(
+        &[auth("177****7689")],
+        &cfg_for(&stub.base),
+        None,
+        Arc::clone(&secrets),
+        None,
+    );
+    assert_eq!(report[0].1, "authenticated");
+
+    let seen = stub.seen();
+    assert_eq!(seen.len(), 1, "只应发一次请求，实际: {:?}", seen);
+    assert!(
+        seen[0].contains("/base/mine/userInfo"),
+        "应调 userInfo: {:?}",
+        seen
+    );
+    assert!(
+        !seen.iter().any(|p| p.contains("/grant")),
+        "不得触碰 grant 接口"
+    );
+
+    let head = &stub.heads()[0];
+    assert!(
+        !head.to_lowercase().contains("content-type"),
+        "GET 不应带 Content-Type:/n{}",
+        head
+    );
+    assert!(
+        !head.to_lowercase().contains("gl-checksum"),
+        "GET 无 body，不应签名:\n{}",
+        head
+    );
+    assert!(stub.bodies().iter().all(|b| b.is_none()), "GET 不应带 body");
+}
+
+#[test]
+fn verify_session_maps_expired_and_unknown() {
+    // 873 -> expired；40007 -> unknown（被限流挡在门外，判断不了登录态）
+    for (code, errmsg, expect) in [
+        (873, "你离开太久了", "expired"),
+        (40007, "操作频繁", "unknown"),
+        (60001, "库存不足", "unknown"),
+    ] {
+        let stub = Stub::spawn(vec![(
+            "/base/mine/userInfo".into(),
+            json!({"code": code, "errmsg": errmsg}).to_string(),
+        )]);
+        let secrets = SecretsRegistry::new();
+        let report = flows::verify_session(
+            &[auth("A")],
+            &cfg_for(&stub.base),
+            None,
+            Arc::clone(&secrets),
+            None,
+        );
+        assert_eq!(report[0].1, expect, "code={} 应映射为 {}", code, expect);
+    }
+}
+
+#[test]
+fn loop_first_wave_only_priorities_probe_follows_in_wave_two() {
+    // 目标包含三张固定券，但第一波只打两张 5 折（冻结的最优策略），
+    // 满28减10 从第二波开始跟进——用请求体里的 superCouponId 观察顺序
+    let coupons = json!([
+        {"couponId": CID_PROBE, "couponName": "【外卖券】满28减10",
+         "couponType": "PHONE_REWARD"},
+        {"couponId": CID_CUT20, "couponName": "【5折外卖券】立减20",
+         "couponType": "PHONE_REWARD"},
+        {"couponId": CID_CUT25, "couponName": "【5折外卖券】立减25",
+         "couponType": "PHONE_REWARD"},
+    ]);
+    let stub = Stub::spawn(vec![
+        ("/super-coupon/info".into(), info_body(coupons)),
+        ("/super-coupon/grant-status".into(), empty_status()),
+        (
+            "/super-coupon/grant".into(),
+            r#"{"code":200,"result":{"winPrizeInfo":{}}}"#.to_string(),
+        ),
+    ]);
+
+    let mut cfg = cfg_for(&stub.base);
+    cfg.loop_minutes = 0.1; // 6s 上限，settled 后立即退出
+    cfg.loop_interval = 0.05;
+    cfg.refresh_every = 999.0; // 关掉刷新，避免干扰请求序列
+
+    let secrets = SecretsRegistry::new();
+    let report = flows::loop_run(
+        vec![auth("177****7689")],
+        cfg,
+        0.1,
+        0.05,
+        None,
+        None,
+        Arc::clone(&secrets),
+        None,
+    )
+    .expect("loop 应正常启动");
+
+    // 领取请求的 couponId 顺序
+    let grant_ids: Vec<String> = stub
+        .heads()
+        .iter()
+        .zip(stub.bodies())
+        .filter(|(h, _)| h.starts_with("POST") && h.contains("/super-coupon/grant "))
+        .filter_map(|(_, b)| b)
+        .filter_map(|b| {
+            let v: Value = serde_json::from_str(&b).ok()?;
+            v.get("superCouponId")
+                .and_then(Value::as_str)
+                .map(String::from)
+        })
+        .collect();
+
+    assert!(
+        grant_ids.len() >= 3,
+        "至少应有 3 次领取请求: {:?}",
+        grant_ids
+    );
+    // 第一波 = 前 2 个请求（单账号 × 两张 5 折）。波内任务是并发线程，
+    // 到达服务端的先后顺序不确定，所以只断言「集合」而不是顺序。
+    let first_wave = &grant_ids[..2];
+    assert!(
+        first_wave
+            .iter()
+            .all(|id| id == CID_CUT20 || id == CID_CUT25),
+        "第一波只应是两张 5 折，实际: {:?}",
+        first_wave
+    );
+    assert!(
+        !first_wave.contains(&CID_PROBE.to_string()),
+        "第一波不得包含满28减10: {:?}",
+        first_wave
+    );
+    // 满28减10 首次出现在第二波及以后
+    let probe_at = grant_ids
+        .iter()
+        .position(|id| id == CID_PROBE)
+        .expect("满28减10 应被跟进");
+    assert!(
+        probe_at >= 2,
+        "满28减10 应从第二波开始跟进，实际位置 {}: {:?}",
+        probe_at,
+        grant_ids
+    );
+
+    // 报告里三张券都有结论
+    assert_eq!(report[0].1.len(), 3, "三张目标券都应有结论");
 }

@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use crate::api_client::{ApiClient, ApiFailure};
 use crate::config::Config;
-use crate::errors::classify_grant_error;
+use crate::errors::{classify_grant_error, AUTH_EXPIRED_CODES};
 use crate::models::{Coupon, GrantEvent};
 use crate::notify::{account_routing, Notifier};
 use crate::pacing::GrantPacing;
@@ -197,7 +197,12 @@ pub fn ping(
     report
 }
 
-/// 会话验证（有副作用！）：用探针券尝试一次领取来证明登录态。
+/// 会话验证（**只读，无副作用**）：调 `userInfo` 接口验证登录态。
+///
+/// 每账号返回：`authenticated` / `expired` / `unknown` / `error: ...`。
+/// 873 -> `expired`；200 -> `authenticated`；限流等其他业务码 -> `unknown`；
+/// 网络/解析失败 -> `error`。`userInfo` 同样返回 873 识别过期（2026-10-12 实测），
+/// 且不触碰任何券——旧的 grant 探针在探针券当天未领时会实际领掉一张，已不再使用。
 pub fn verify_session(
     auths: &[Auth],
     config: &Config,
@@ -205,31 +210,29 @@ pub fn verify_session(
     secrets: Arc<SecretsRegistry>,
     notifier: Option<&Notifier>,
 ) -> Vec<(String, String)> {
-    let probe_cfg = match config.probe_coupon() {
-        Some(p) => p,
-        None => {
-            eprintln!("配置里没有可用作探针的券（probe_coupon 为空）");
-            return Vec::new();
-        }
-    };
-    let probe = Coupon::from_api(probe_cfg);
     let mut report = Vec::new();
     let mut log_lines = Vec::new();
     for auth in auths {
         let label = &auth.label;
         let t0 = Instant::now();
         let status = match ApiClient::from_auth(auth, config, Arc::clone(&secrets), None) {
-            Ok(client) => {
-                let (st, detail, _) =
-                    try_grant(&client, &config.fixed_brand_id, &probe, None, config);
-                match st.as_str() {
-                    "granted" | "already_claimed" | "out_of_stock" => "authenticated".into(),
-                    "auth_expired" => "expired".into(),
-                    "rate_limited" => "unknown".into(),
-                    _ => format!("error: {}", detail.chars().take(120).collect::<String>()),
+            Ok(client) => match client.userinfo(None) {
+                Ok(_) => "authenticated".to_string(),
+                Err(ApiFailure::Business(e)) => {
+                    if e.code.is_some_and(|c| AUTH_EXPIRED_CODES.contains(&c)) {
+                        "expired".into()
+                    } else {
+                        // 40007 被限流挡在门外，无法判断登录态；其他业务码同样不确定
+                        "unknown".into()
+                    }
                 }
-            }
-            Err(e) => format!("error: {}", e),
+                // 传输层/解析失败与其他意外一律归为 error，消息已脱敏限长
+                Err(e) => format!(
+                    "error: {}",
+                    e.message(&secrets).chars().take(120).collect::<String>()
+                ),
+            },
+            Err(e) => format!("error: {}", e.chars().take(120).collect::<String>()),
         };
         log_lines.push(format!(
             "{} [{}] {} ({:.2}s)",
@@ -644,8 +647,10 @@ impl LoopRunner {
             cfg.sustained_inflight,
         );
 
-        // 目标券直接来自配置，第一波零等待开抢
-        let snipe = cfg.snipe_coupons();
+        // 固定券直接就位：两张 5 折第一波极限开抢；满28减10 不参与秒杀，
+        // 从第二波开始跟进（全天可领，无需极限速度；第一波保持冻结的
+        // 0.05s 错峰 + 6 并发，不给限流桶增加负担）
+        let snipe = &cfg.fixed_coupons;
         let mut targets: Vec<Vec<(String, Coupon)>> = Vec::new();
         for _ in &auths {
             let list = snipe
@@ -703,80 +708,87 @@ impl LoopRunner {
         }
         let deadline = Instant::now() + Duration::from_secs_f64(self.minutes * 60.0);
 
-        while Instant::now() < deadline {
-            let mut last_refresh = Instant::now();
-            loop {
-                // 第一波结束后、以及每 refresh_every 秒提交一次列表刷新
-                if wave_count == 1 || last_refresh.elapsed().as_secs_f64() >= self.cfg.refresh_every
-                {
-                    std::thread::scope(|s| {
-                        for (i, client) in self.clients.iter().enumerate() {
-                            let this = &self;
-                            s.spawn(move || this.refresh_one(i, client));
-                        }
-                    });
-                    last_refresh = Instant::now();
-                }
-                let tasks = self.build_wave_tasks();
-                let events_before = {
-                    let st = self.state.lock().unwrap();
-                    st.events.len()
-                };
-                log(&format!(
-                    "第 {} 波开始，共 {} 个任务",
-                    wave_count + 1,
-                    tasks.len()
-                ));
+        // 单层波次循环（与 Python 版同构）：任一 break 都直接结束抢券。
+        // 曾误写成「外层 while + 内层 loop」，内层 break 只跳出内层，
+        // 外层会带着空任务继续空转到 deadline。
+        let mut last_refresh = Instant::now();
+        loop {
+            if Instant::now() >= deadline {
+                break;
+            }
+            // 第一波结束后、以及每 refresh_every 秒提交一次列表刷新
+            if wave_count == 1 || last_refresh.elapsed().as_secs_f64() >= self.cfg.refresh_every {
                 std::thread::scope(|s| {
-                    for (i, brand_id, coupon) in tasks {
+                    for (i, client) in self.clients.iter().enumerate() {
                         let this = &self;
-                        s.spawn(move || this.grant_one(i, &brand_id, &coupon));
+                        s.spawn(move || this.refresh_one(i, client));
                     }
                 });
-                wave_count += 1;
-
-                let wave_events = {
-                    let st = self.state.lock().unwrap();
-                    st.events[events_before..].to_vec()
-                };
-
-                if wave_count == 1 && !self.cfg.burst_test {
-                    self.pacing.enter_sustained_mode();
-                    log(&format!(
-                        "第一波结束，已切换到安全模式（{}秒间隔、最多{}并发）",
-                        self.cfg.sustained_gap, self.cfg.sustained_inflight
-                    ));
-                }
-
-                // 首波全抢光提前收工
-                if self.cfg.early_stop_all_soldout
-                    && wave_count == 1
-                    && !wave_events.is_empty()
-                    && wave_events.iter().all(|e| e.status == "out_of_stock")
-                {
-                    wave1_all_soldout = true;
-                    log("首波全抢光，下一波确认后若仍全抢光则提前收工");
-                } else if self.cfg.early_stop_all_soldout && wave_count == 2 && wave1_all_soldout {
-                    if !wave_events.is_empty()
-                        && wave_events.iter().all(|e| e.status == "out_of_stock")
-                    {
-                        log("确认波全抢光，提前收工（券已抢完，不再消耗配额）");
-                        break;
-                    }
-                    wave1_all_soldout = false;
-                }
-
-                if self.all_settled() {
-                    log("所有券已有结论（已领/抢光停止），提前结束");
-                    break;
-                }
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                let sleep_secs = self.interval.min(remaining.as_secs_f64()).max(0.0);
-                std::thread::sleep(Duration::from_secs_f64(sleep_secs));
+                last_refresh = Instant::now();
             }
+            let mut tasks = self.build_wave_tasks();
+            if wave_count == 0 {
+                // 第一波只打 5 折：冻结的最优策略（0.05s 错峰 + 6 并发），
+                // 行为与之前逐字节一致；满28减10 不争抢，从第二波开始跟进
+                tasks.retain(|(_, _, c)| self.is_priority(c));
+            }
+            let events_before = {
+                let st = self.state.lock().unwrap();
+                st.events.len()
+            };
+            log(&format!(
+                "第 {} 波开始，共 {} 个任务",
+                wave_count + 1,
+                tasks.len()
+            ));
+            std::thread::scope(|s| {
+                for (i, brand_id, coupon) in tasks {
+                    let this = &self;
+                    s.spawn(move || this.grant_one(i, &brand_id, &coupon));
+                }
+            });
+            wave_count += 1;
+
+            let wave_events = {
+                let st = self.state.lock().unwrap();
+                st.events[events_before..].to_vec()
+            };
+
+            if wave_count == 1 && !self.cfg.burst_test {
+                self.pacing.enter_sustained_mode();
+                log(&format!(
+                    "第一波结束，已切换到安全模式（{}秒间隔、最多{}并发）",
+                    self.cfg.sustained_gap, self.cfg.sustained_inflight
+                ));
+            }
+
+            // 首波全抢光提前收工
+            if self.cfg.early_stop_all_soldout
+                && wave_count == 1
+                && !wave_events.is_empty()
+                && wave_events.iter().all(|e| e.status == "out_of_stock")
+            {
+                wave1_all_soldout = true;
+                log("首波全抢光，下一波确认后若仍全抢光则提前收工");
+            } else if self.cfg.early_stop_all_soldout && wave_count == 2 && wave1_all_soldout {
+                if !wave_events.is_empty() && wave_events.iter().all(|e| e.status == "out_of_stock")
+                {
+                    log("确认波全抢光，提前收工（券已抢完，不再消耗配额）");
+                    break;
+                }
+                wave1_all_soldout = false;
+            }
+
+            if self.all_settled() {
+                log("所有券已有结论（已领/抢光停止），提前结束");
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let sleep_secs = self.interval.min(remaining.as_secs_f64()).max(0.0);
+            std::thread::sleep(Duration::from_secs_f64(sleep_secs));
         }
 
         self.log_summary(wave_count);
@@ -1034,17 +1046,29 @@ impl LoopRunner {
         self.logger.log(&format!("开火！(lead={:.2}s)", lead));
     }
 
-    /// 本轮任务：优先券排前面。
+    /// 两张 5 折券优先并发。
+    fn is_priority(&self, coupon: &Coupon) -> bool {
+        coupon.coupon_name.contains(&self.cfg.snipe_keyword)
+    }
+
+    /// 本轮任务：优先券排前面，其余（满28减10）跟在其后。
     fn build_wave_tasks(&self) -> Vec<(usize, String, Coupon)> {
         let mut tasks = Vec::new();
         let st = self.state.lock().unwrap();
         for i in 0..self.auths.len() {
-            let mut pending: Vec<&(String, Coupon)> = st.targets[i]
+            let pending: Vec<&(String, Coupon)> = st.targets[i]
                 .iter()
                 .filter(|(_, c)| !st.done[i].contains(&c.coupon_id))
                 .collect();
-            pending.sort_by_key(|(_, c)| !c.coupon_name.contains(&self.cfg.snipe_keyword));
-            for (brand_id, c) in pending {
+            let pri: Vec<_> = pending
+                .iter()
+                .filter(|(_, c)| self.is_priority(c))
+                .collect();
+            let rest: Vec<_> = pending
+                .iter()
+                .filter(|(_, c)| !self.is_priority(c))
+                .collect();
+            for (brand_id, c) in pri.into_iter().chain(rest) {
                 tasks.push((i, brand_id.clone(), c.clone()));
             }
         }

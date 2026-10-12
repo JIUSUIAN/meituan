@@ -201,14 +201,60 @@ impl ApiClient {
         let raw = serde_json::to_string(body)
             .map_err(|e| ApiParseError::new(format!("请求体序列化失败: {}", e), None))?;
         let checksum = self.sign(&raw);
-        let cookie_header = self.cookies.header();
-
-        let mut headers = HeaderMap::new();
+        let mut headers = self.identity_headers();
         // 服务端按 Content-Type 决定是否解析请求体：少了它会被 WAF 直接拒（code=417）
         headers.insert(
             CONTENT_TYPE,
             HeaderValue::from_static("application/json;charset=UTF-8"),
         );
+        headers.insert(
+            "GL-CheckSum",
+            HeaderValue::from_str(&checksum).unwrap_or_else(|_| HeaderValue::from_static("")),
+        );
+        headers.insert(
+            REFERER,
+            HeaderValue::from_static(
+                "https://vip.ds.163.com/partner-perks?wvFullScreen=true&\
+                 wvStatusBarStyle=white&utm_source=hy.myicon",
+            ),
+        );
+
+        let url = format!("{}{}", self.config.base_url, path);
+        let timeout = timeout.unwrap_or_else(|| Duration::from_secs_f64(self.config.api_timeout));
+        let resp = self
+            .client
+            .post(&url)
+            .body(raw)
+            .headers(headers)
+            .timeout(timeout)
+            .send()
+            .map_err(|e| self.transport_error(&e))?;
+        self.finish(resp)
+    }
+
+    /// 查询用户信息（只读 GET，无副作用）。返回原始 `result`。
+    ///
+    /// 登录过期时返回业务码 873，可作**无副作用**的会话探针——替代
+    /// grant-status 探针，后者在探针券当天未领时会实际领掉一张。
+    /// GET 不带 body，故不做 `GL-CheckSum` 签名、也不发 `Content-Type`
+    /// （与官方 web 端行为一致）。
+    pub fn userinfo(&self, timeout: Option<Duration>) -> Result<Value, ApiFailure> {
+        let headers = self.identity_headers();
+        let url = format!("{}{}", self.config.base_url, self.config.userinfo_path);
+        let timeout = timeout.unwrap_or_else(|| Duration::from_secs_f64(self.config.api_timeout));
+        let resp = self
+            .client
+            .get(&url)
+            .headers(headers)
+            .timeout(timeout)
+            .send()
+            .map_err(|e| self.transport_error(&e))?;
+        self.finish(resp)
+    }
+
+    /// 两个端点共用的身份与来源头（不含 `Content-Type`、签名与 `Referer`）。
+    fn identity_headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
         headers.insert(
             USER_AGENT,
             HeaderValue::from_str(&self.config.user_agent)
@@ -216,7 +262,8 @@ impl ApiClient {
         );
         headers.insert(
             COOKIE,
-            HeaderValue::from_str(&cookie_header).unwrap_or_else(|_| HeaderValue::from_static("")),
+            HeaderValue::from_str(&self.cookies.header())
+                .unwrap_or_else(|_| HeaderValue::from_static("")),
         );
         headers.insert(
             "GL-DeviceId",
@@ -232,33 +279,23 @@ impl ApiClient {
             HeaderValue::from_str(&self.god_uuid).unwrap_or_else(|_| HeaderValue::from_static("")),
         );
         headers.insert("GL-ClientType", HeaderValue::from_static(CLIENT_TYPE));
-        headers.insert(
-            "GL-CheckSum",
-            HeaderValue::from_str(&checksum).unwrap_or_else(|_| HeaderValue::from_static("")),
-        );
         headers.insert(ORIGIN, HeaderValue::from_static("https://vip.ds.163.com"));
-        headers.insert(REFERER, HeaderValue::from_static(
-            "https://vip.ds.163.com/partner-perks?wvFullScreen=true&wvStatusBarStyle=white&utm_source=hy.myicon"));
+        headers
+    }
 
-        let url = format!("{}{}", self.config.base_url, path);
-        let timeout = timeout.unwrap_or_else(|| Duration::from_secs_f64(self.config.api_timeout));
-        let resp = self
-            .client
-            .post(&url)
-            .body(raw)
-            .headers(headers)
-            .timeout(timeout)
-            .send()
-            .map_err(|e| {
-                ApiTransportError::new(
-                    format!(
-                        "网络请求失败: {}",
-                        self.secrets.redact(Some(&e.to_string()))
-                    ),
-                    None,
-                )
-            })?;
+    fn transport_error(&self, e: &reqwest::Error) -> ApiFailure {
+        ApiTransportError::new(
+            format!(
+                "网络请求失败: {}",
+                self.secrets.redact(Some(&e.to_string()))
+            ),
+            None,
+        )
+        .into()
+    }
 
+    /// POST 与 GET 共用的响应处理：Cookie 轮换 -> 状态码 -> JSON -> 业务码。
+    fn finish(&self, resp: Response) -> Result<Value, ApiFailure> {
         // 轮换跟踪先于错误处理：Set-Cookie 可能随任意状态码（含 4xx/5xx）下发
         self.follow_cookie_rotation(&resp);
 

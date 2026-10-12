@@ -11,7 +11,7 @@
 |---|---|
 | 版本 | `1.21.0`（真源 `Cargo.toml` 的 `version`） |
 | 语言 / 工具链 | Rust ≥ 1.89（2021 edition） |
-| 测试 | 62 项（54 单元 + 8 集成），全部只访问本地桩服务 |
+| 测试 | 65 项（54 单元 + 11 集成），全部只访问本地桩服务 |
 | 代码质量 | `cargo fmt --check` 与 `cargo clippy --all-targets` 均零告警 |
 | 当前活动商家 | 霸王茶姬（`brand_keyword`） |
 | 抢券目标 | 两张 5 折外卖券（`snipe_keyword="5折"`） |
@@ -92,9 +92,9 @@ cargo run -- --notify-test                       # 按通道 + 账号路由各�
 | 模式 | 做什么 | 副作用 | 报告状态 | 退出码 |
 |---|---|---|---|---|
 | 单次（默认） | 拉列表 → 查已领状态 → 逐张尝试可领券（`single_run_snipe_only=true` 时只处理目标券） | 会真领 | 每账号一组 `{coupon, status, detail}` | 任一账号执行异常 → 1 |
-| `--loop` | 只抢目标券（两张 5 折），波次重试直到全有结论或超时 | 会真领 | 同上 + `grant_status` | 任一 `auth_expired`/`error` → 1 |
+| `--loop` | 目标为三张固定券：**第一波只打两张 5 折**（冻结的最优策略），满28减10 从第二波跟进；波次重试直到全有结论或超时 | 会真领 | 同上 + `grant_status` | 任一 `auth_expired`/`error` → 1 |
 | `--ping` | 只调 info + grant-status 两个只读接口 | 无 | `reachable` / `expired` / `unknown` / `error: ...` | 任一 `expired`/`error` → 1 |
-| `--verify-session` | 用探针券试领一次，证明登录态 | **有**（当天探针券未领会领掉一张） | `authenticated` / `expired` / `unknown` / `error: ...` | 有任一非 `authenticated` → 1 |
+| `--verify-session` | 调 `userInfo` 只读接口验证登录态 | **无** | `authenticated` / `expired` / `unknown` / `error: ...` | 有任一非 `authenticated` → 1 |
 
 参数：
 
@@ -112,8 +112,13 @@ cargo run -- --notify-test                       # 按通道 + 账号路由各�
 | `--ping` / `--verify-session` | 互斥 |
 
 - `--ping` 只证明「网络与签名可用」（只读接口不校验登录），不会谎报 `authenticated`。
-- 单次与 loop 的目标不同：单次默认覆盖品牌下全部可领券；loop 只打 `snipe_keyword`
-  命中的券，把第一波火力留给目标。想让单次也只处理目标券，开 `single_run_snipe_only`。
+- `--verify-session` 调 `userInfo`（只读 GET，无副作用）：`873` → `expired`，
+  被限流挡在门外 → `unknown`。旧实现用 grant 探针，会在探针券当天未领时**实际领掉一张**，
+  已不再使用。
+- 单次与 loop 的目标不同：单次默认覆盖品牌下全部可领券；loop 目标为三张固定券，
+  但**第一波只打 `snipe_keyword` 命中的两张 5 折**（0.05s 错峰 + 6 并发，冻结的最优策略），
+  满28减10 全天可领、不参与秒杀，从第二波开始跟进。想让单次也只处理目标券，
+  开 `single_run_snipe_only`。
 
 ---
 
@@ -184,6 +189,9 @@ MEITUAN_BASE_DIR=/path/to/conf cargo run -- --ping     # 指定凭据/配置查�
 | `adaptive_lead` | true | 用预热 RTT 自适应提前量（中位数×0.2，钳制 0.2~0.6s） |
 | `early_stop_all_soldout` | true | 首波全抢光时确认一波后提前收工 |
 
+端点路径（一般无需改）：`info_path` / `grant_path` / `grant_status_path` /
+`userinfo_path`（默认 `/v1/web/base/mine/userInfo`，`--verify-session` 的只读探针）。
+
 ---
 
 ## 7. 输出
@@ -241,8 +249,8 @@ stdout 是可管道解析的 JSON（日志、进度、警告全部走 stderr）�
 */10 * * * * cd /path/to/meituan && /path/to/meituan --ping >> keepalive.cron.log 2>&1 || notify-send "美团 会话异常"
 ```
 
-想连登录态一起确认，把 `--ping` 换成 `--verify-session`。Windows 用「任务计划程序」。
-间隔务必小于服务端 session 空闲超时。
+想连登录态一起确认，把 `--ping` 换成 `--verify-session`（同样是只读，无副作用）。
+Windows 用「任务计划程序」。间隔务必小于服务端 session 空闲超时。
 
 配好通知通道后，`--ping`/`--verify-session` 发现异常账号会直接推 `health` 事件
 （全部正常时不发），cron 行里的 `|| notify-send` 可以省掉。
@@ -252,7 +260,7 @@ stdout 是可管道解析的 JSON（日志、进度、警告全部走 stderr）�
 ## 10. 测试
 
 ```bash
-cargo test                      # 62 项：54 单元 + 8 集成
+cargo test                      # 65 项：54 单元 + 11 集成
 cargo fmt --check               # 格式检查
 cargo clippy --all-targets      # 静态检查（当前零告警）
 ```
@@ -273,6 +281,7 @@ cargo clippy --all-targets      # 静态检查（当前零告警）
 | `等待凭据文件锁超时` | 有两个实例在并发写同一份认证文件；确认没有重叠运行 |
 | `开火时刻超出合法范围` | 时/分/秒越界（如 `25:00`），直接拒绝而不是钳位 |
 | 第一波就 `rate_limited` | 高频跨波才会撞 40007；确认没开 `MEITUAN_BURST_TEST`，必要时降 `first_wave_inflight` |
+| `--verify-session` 返回 `unknown` | 被 40007 限流挡在门外，无法判断登录态；等退避后再试 |
 | `SMTP 未启用 TLS ... 拒绝发送凭据` | 开 `email_use_ssl`（465）或 `email_use_tls`（587） |
 | 一条通知都没发 | `notify_targets` 为空即整体禁用；或事件不在 `notify_events` 里；或用了 `--no-notify` |
 
@@ -288,7 +297,7 @@ cargo clippy --all-targets      # 静态检查（当前零告警）
 | 环境变量前缀 | `MEITUAN_*` | `MEITUAN_*`（一致） |
 | 配置文件与凭据格式 | `claim.config.json` / `cookies.json` | **完全一致**，可直接复用 |
 | 通知通道与事件 | 7 通道 / 4 事件 | 一致 |
-| 测试数 | 267 | 62（覆盖关键路径与全部已知回归） |
+| 测试数 | 267 | 65（覆盖关键路径与全部已知回归） |
 
 命令行参数、配置字段名、退出码语义、报告页版式都保持一致，
 因此已有的 cron 配置与凭据文件可以原样迁移。

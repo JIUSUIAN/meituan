@@ -100,6 +100,9 @@ pub struct Config {
     pub info_path: String,
     pub grant_path: String,
     pub grant_status_path: String,
+    /// 用户信息（只读 GET，无副作用）：登录态探针，比 grant-status 探针好——
+    /// 后者在探针券当天未领时会实际领掉一张；userInfo 同样返回 873 识别过期。
+    pub userinfo_path: String,
 
     // --- 文件与凭据 ---
     pub auth_files: Vec<String>,
@@ -172,6 +175,7 @@ impl Default for Config {
             info_path: s!("/v1/web/exp-vip/external/super-coupon/info"),
             grant_path: s!("/v1/web/exp-vip/external/super-coupon/grant"),
             grant_status_path: s!("/v1/web/exp-vip/external/super-coupon/grant-status"),
+            userinfo_path: s!("/v1/web/base/mine/userInfo"),
 
             auth_files: vec![s!("cookies.json"), s!("cookies-new.json")],
             session_cookie_names: vec![s!("JSESSIONID")],
@@ -239,7 +243,10 @@ impl Config {
             .collect()
     }
 
-    /// 会话验证探针券：固定券里不属于抢券目标的那张（满28减10）。
+    /// 只读探针券：固定券里不含 `snipe_keyword` 的那张（满28减10）。
+    ///
+    /// 仅供 `--ping` 的 grant-status 只读探针使用；`--verify-session` 已改走
+    /// `userinfo`（无副作用），不再需要探针券。
     pub fn probe_coupon(&self) -> Option<&serde_json::Value> {
         self.fixed_coupons.iter().find(|c| {
             c.get("couponName")
@@ -280,6 +287,7 @@ struct ConfigFile {
     info_path: Option<String>,
     grant_path: Option<String>,
     grant_status_path: Option<String>,
+    userinfo_path: Option<String>,
     auth_files: Option<Vec<String>>,
     session_cookie_names: Option<Vec<String>>,
     persist_rotated_cookies: Option<bool>,
@@ -359,6 +367,7 @@ impl Config {
         set!(info_path);
         set!(grant_path);
         set!(grant_status_path);
+        set!(userinfo_path);
         set!(auth_files);
         set!(session_cookie_names);
         set!(persist_rotated_cookies);
@@ -526,6 +535,7 @@ impl Config {
         s_!(info_path);
         s_!(grant_path);
         s_!(grant_status_path);
+        s_!(userinfo_path);
         v_!(auth_files);
         v_!(session_cookie_names);
         b_!(persist_rotated_cookies);

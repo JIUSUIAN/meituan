@@ -125,6 +125,50 @@ class ApiClient:
                            http_status=r.status_code)
         return data.get("result")
 
+    def userinfo(self, timeout=None):
+        """查询用户信息（只读 GET，无副作用）。返回原始 result。
+
+        登录过期时抛 ApiError(873)，可作无副作用的会话探针——
+        替代 grant-status 探针，后者在探针券当天未领时会实际领掉一张。
+        GET 不带 body，故不做 GL-CheckSum 签名（与官方 web 端行为一致）。
+        """
+        cfg = self.config
+        timeout = cfg.api_timeout if timeout is None else timeout
+        headers = {
+            "GL-DeviceId": self.auth["device_id"],
+            "GL-X-XSRF-TOKEN": self.auth["GL-XSRF-TOKEN"],
+            "GL-Uid": self.auth["GOD_UUID"],
+            "GL-ClientType": "60",
+            "Cookie": self.cookies.header(),
+            "User-Agent": cfg.user_agent,
+            "Origin": "https://vip.ds.163.com",
+        }
+        try:
+            r = self.session.get(cfg.base_url + cfg.userinfo_path,
+                                 headers=headers, timeout=timeout)
+        except requests.RequestException as e:
+            raise ApiTransportError("网络请求失败: %s" %
+                                    self.secrets.redact(str(e))[:200]) from None
+        # 轮换跟踪先于错误处理：Set-Cookie 可能随任意状态码下发
+        self._follow_cookie_rotation(r)
+        if r.status_code >= 400:
+            raise ApiTransportError(
+                "HTTP %s: %s" % (r.status_code, self.secrets.redact(r.text)[:200]),
+                http_status=r.status_code)
+        try:
+            data = r.json()
+        except ValueError:
+            raise ApiParseError("响应不是合法 JSON（HTTP %s）" % r.status_code,
+                                http_status=r.status_code) from None
+        if not isinstance(data, dict):
+            raise ApiParseError("响应结构异常（非 JSON 对象）",
+                                http_status=r.status_code)
+        if data.get("code") != 200:
+            raise ApiError(data.get("code"),
+                           self.secrets.redact(str(data.get("errmsg") or ""))[:200],
+                           http_status=r.status_code)
+        return data.get("result")
+
     # -- JSESSIONID 等会话 Cookie 的轮换跟踪 -------------------------------
 
     def _follow_cookie_rotation(self, r):

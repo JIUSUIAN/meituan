@@ -270,12 +270,12 @@ class LoopRunnerSmokeTest(unittest.TestCase):
         report = flows.loop_run([dict(AUTH)], config=cfg,
                                 minutes=0.5, interval=0.05)
         items = report["acc-1"]
-        self.assertEqual(len(items), 2)  # 两张5折券
+        self.assertEqual(len(items), 3)  # 两张5折 + 满28减10
         self.assertTrue(all(i["status"] == "granted" for i in items))
-        # grant 只发了两次（第一波全中，没有多余波次）
+        # 第一波 2 发（5折全中），第二波 1 发（28-10），然后收工
         grant_urls = [u for s in self.sessions for u in s.calls
                       if u.endswith(cfg.grant_path)]
-        self.assertEqual(len(grant_urls), 2)
+        self.assertEqual(len(grant_urls), 3)
 
     def test_loop_out_of_stock_stops_after_streak(self):
         cfg = Config()
