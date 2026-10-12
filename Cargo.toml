@@ -1,0 +1,36 @@
+[package]
+name = "meituan"
+version = "1.21.0"
+edition = "2021"
+# 文件锁用 std 的 File::try_lock（1.89 起稳定），因此 MSRV 定在 1.89
+rust-version = "1.89"
+description = "网易大神 partner-perks 美团外卖券自动领取（多账号并发、请求签名直调）"
+license = "MIT"
+readme = "README.md"
+
+[lib]
+name = "meituan"
+path = "src/lib.rs"
+
+[[bin]]
+name = "meituan"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "native-tls", "json"] }
+sha1 = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+lettre = { version = "0.11", features = ["smtp-transport", "hostname", "builder"] }
+regex = "1"
+percent-encoding = "2"
+
+[profile.release]
+opt-level = 2
+lto = false

@@ -4,36 +4,48 @@ on:
   push:
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.13"]
+        # Ubuntu 验证 Linux 路径；Windows 用默认的 MSVC 工具链
+        # （GNU 工具链需要额外的 as.exe，见 README 1.1 节）
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: ${{ matrix.python-version }}
+          components: rustfmt, clippy
 
-      - name: 安装依赖
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
+      - name: 依赖缓存
+        uses: Swatinem/rust-cache@v2
 
       # 凭据文件一旦入库即视为泄露（见 .gitignore 与 README 安全约定）
       - name: 凭据文件绝不入库
+        shell: bash
         run: |
           if git ls-files | grep -E '(^|/)cookies[^/]*\.json'; then
             echo "::error::检测到凭据文件已入库，视为已泄露：立即重新获取并清理历史"
             exit 1
           fi
 
-      - name: 语法编译检查
-        run: python -m compileall -q meituan tests claim.py
+      - name: 格式检查
+        run: cargo fmt --check
 
-      # 测试全部 mock，不访问真实第三方接口
-      - name: 单元测试
-        run: python -m unittest discover -s tests -t . -v
+      - name: 静态检查
+        run: cargo clippy --all-targets -- -D warnings
+
+      # 测试全部只访问 127.0.0.1 上的本地桩服务，不触碰真实第三方接口
+      - name: 单元测试 + 集成测试
+        run: cargo test
+
+      - name: 发布构建
+        run: cargo build --release

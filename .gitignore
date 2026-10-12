@@ -6,15 +6,21 @@ cookies-new.json
 cookies*.bak
 .env
 
-# 本地解释器与打包产物
+# Rust 构建产物
+target/
+
+# Python 侧（legacy-python/ 仍可能被本地跑）
 .venv/
 *.egg-info/
 build/
 dist/
+__pycache__/
 
 # 运行日志、事件明细与凭据中转残留
 *.tmp
 *.jsonl
 *.log
+# 凭据回写的跨进程锁文件（<认证文件>.lock）；
+# Cargo.lock 是二进制 crate 的可复现构建依据，必须入库，故显式豁免
 *.lock
-__pycache__/
+!Cargo.lock
