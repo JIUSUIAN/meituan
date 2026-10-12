@@ -1,6 +1,18 @@
+# 凭据文件绝不入库；若曾提交过，视为已泄露并重新获取
+# （cookies.example.json 是模板文件，不受这些规则影响）
 claim.config.json
 cookies.json
+cookies-new.json
 cookies*.bak
+.env
+
+# 本地解释器与打包产物
+.venv/
+*.egg-info/
+build/
+dist/
+
+# 运行日志、事件明细与凭据中转残留
 *.tmp
 *.jsonl
 *.log
