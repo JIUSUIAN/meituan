@@ -282,15 +282,21 @@ pub fn headline(lit_count: usize, total: usize) -> (String, String) {
 }
 
 /// 把结果摆进左右两个卡位：按票面数字小的放左边，凑不满就留空位。
-fn ordered_items(items: &[Value]) -> Vec<Value> {
+fn ordered_items(items: &[Value], priority_keyword: Option<&str>) -> Vec<Value> {
     let mut v: Vec<Value> = items.to_vec();
     v.sort_by_key(|item| {
         let name = item.get("coupon").and_then(Value::as_str).unwrap_or("");
-        digits_re()
+        // 含 priority_keyword 的券（5折主目标）优先占卡位，其余进「其他券」
+        let pri = match priority_keyword {
+            Some(kw) if name.contains(kw) => 0,
+            _ => 1,
+        };
+        let num = digits_re()
             .find_iter(name)
             .last()
             .and_then(|m| m.as_str().parse::<i64>().ok())
-            .unwrap_or(999)
+            .unwrap_or(999);
+        (pri, num)
     });
     v
 }
@@ -336,9 +342,10 @@ fn cards_block(
     timings: &[(String, String, f64)],
     compact: bool,
 ) -> (String, usize) {
-    let ordered = ordered_items(items);
-    let left = ordered.first();
-    let right = ordered.get(1);
+    // 调用方已排好序（render_account 的 priority 顺序），这里不再重排——
+    // 重排会与「其他券」的溢出切分用不同顺序，导致卡位和溢出不一致
+    let left = items.first();
+    let right = items.get(1);
     let lit = [left, right].into_iter().filter(|it| is_lit(*it)).count();
     let mut cells = card(left, timings, compact);
     if lit < 2 {
@@ -504,9 +511,10 @@ pub fn render_account(
     timings: &[(String, String, f64)],
     extra_lines: &[String],
     meta: &str,
+    priority_keyword: Option<&str>,
 ) -> String {
     let items: Vec<Value> = items.to_vec();
-    let ordered = ordered_items(&items);
+    let ordered = ordered_items(&items, priority_keyword);
     let (cards, _) = cards_block(&ordered, timings, false);
     let (headline, color) = headline(
         items.iter().filter(|it| is_lit(Some(it))).count(),
@@ -625,6 +633,7 @@ mod tests {
             &[],
             &[],
             "meta",
+            None,
         );
         for name in ["券10", "券20", "券30"] {
             assert!(html.contains(name), "{} 应出现", name);
@@ -649,6 +658,7 @@ mod tests {
             &[],
             &[],
             "meta",
+            None,
         );
         assert!(!html.contains("恭喜您 抢到券了！"));
         assert!(html.contains("差一点"));
@@ -667,14 +677,59 @@ mod tests {
             &[],
             &[],
             "meta",
+            None,
         );
         assert!(html.contains("恭喜您 抢到券了！"));
         assert!(html.contains("券30"));
     }
 
     #[test]
+    fn priority_keyword_puts_targets_in_card_slots() {
+        // 顶部大卡只放 5 折主目标，满28减10 进「其他券」
+        let html = render_account(
+            "老号",
+            &[
+                item("【外卖券】满28减10", "already_claimed"),
+                item("【5折外卖券】立减20", "granted"),
+                item("【5折外卖券】立减25", "out_of_stock"),
+            ],
+            &[],
+            &[],
+            "meta",
+            Some("5折"),
+        );
+        let other_idx = html.find("其他券").expect("应有其他券表");
+        for name in ["立减20", "立减25"] {
+            let idx = html.find(name).expect("5折应在卡位");
+            assert!(idx < other_idx, "{} 应在卡位（其他券之前）", name);
+        }
+        let idx = html.find("满28减10").expect("28-10 应出现");
+        assert!(idx > other_idx, "满28减10 应在其他券内");
+    }
+
+    #[test]
+    fn no_keyword_keeps_numeric_order() {
+        // 不传 keyword 时退化为纯票面排序：28-10（末尾数字10）占卡位
+        let html = render_account(
+            "老号",
+            &[
+                item("【外卖券】满28减10", "already_claimed"),
+                item("【5折外卖券】立减20", "granted"),
+                item("【5折外卖券】立减25", "out_of_stock"),
+            ],
+            &[],
+            &[],
+            "meta",
+            None,
+        );
+        let other_idx = html.find("其他券").expect("应有其他券表");
+        assert!(html.find("满28减10").unwrap() < other_idx);
+        assert!(html.find("立减25").unwrap() > other_idx);
+    }
+
+    #[test]
     fn single_item_leaves_right_slot_pending() {
-        let html = render_account("老号", &[item("券10", "granted")], &[], &[], "meta");
+        let html = render_account("老号", &[item("券10", "granted")], &[], &[], "meta", None);
         assert!(html.contains("恭喜您 抢到券了！"));
         assert!(html.contains("未参与"));
     }
@@ -687,6 +742,7 @@ mod tests {
             &[],
             &[],
             "m",
+            None,
         );
         assert!(!both.contains("#4a3517"), "全中不应有裂缝");
         let half = render_account(
@@ -695,6 +751,7 @@ mod tests {
             &[],
             &[],
             "m",
+            None,
         );
         assert!(half.contains("#4a3517"), "没抢到那侧应有裂缝");
         assert!(half.contains("#f1f2f4"), "灰卡底色");
@@ -733,7 +790,7 @@ mod tests {
 
     #[test]
     fn page_is_self_contained() {
-        let html = render_account("老号", &[item("券10", "granted")], &[], &[], "m");
+        let html = render_account("老号", &[item("券10", "granted")], &[], &[], "m", None);
         assert!(html.starts_with("<!doctype html>"));
         assert!(!html.to_lowercase().contains("<script"));
         assert!(!html.contains("http://"));

@@ -452,6 +452,8 @@ impl Notifier {
                 timings,
                 &self.safe_lines(extra_lines),
                 &self.safe_text(&self.stamp()),
+                // 顶部大卡只放 5 折主目标，满28减10 等进「其他券」
+                Some(self.cfg.snipe_keyword.as_str()),
             ))
         } else {
             None

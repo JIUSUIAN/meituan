@@ -197,7 +197,9 @@ impl ApiClient {
         body: &Value,
         timeout: Option<Duration>,
     ) -> Result<Value, ApiFailure> {
-        // 对齐 JS 的 JSON.stringify：无空格、键按插入顺序、不转义 Unicode
+        // 对齐 JS 的 JSON.stringify：无空格、不转义 Unicode；
+        // 键为 serde_json 默认的字母序（未启用 preserve_order，见 Cargo.toml 注释）；
+        // 真正的不变量是签名用的字节 == 实际发送的字节，键序本身不影响签名有效性
         let raw = serde_json::to_string(body)
             .map_err(|e| ApiParseError::new(format!("请求体序列化失败: {}", e), None))?;
         let checksum = self.sign(&raw);
