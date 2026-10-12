@@ -10,8 +10,7 @@
                 仅调用只读接口（info / grant-status），无业务副作用；
                 能证明网络可达，无法证明登录态时返回 reachable 而非 authenticated。
   会话验证：    python3 claim.py --verify-session
-                注意：有业务副作用！用探针券尝试一次领取来证明登录态，
-                若当天探针券未领取，会实际领掉一张。
+                只读无副作用，调 userInfo 接口验证登录态（873=过期）。
   循环抢券：    python3 claim.py --loop [--minutes 10] [--interval 2.0]
                 [--fire-at 23:59:59.70] [--fire-lead 0.3]
               循环模式：多账号并发尝试领取，每轮内请求错峰发出

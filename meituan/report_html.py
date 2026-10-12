@@ -230,13 +230,17 @@ def _page(headline, headline_color, kind, body, footer):
         '</div></body></html>')
 
 
-def _ordered(items):
-    """按票面数字小的排前面。卡片位与「其他券」共用这一份顺序。
+def _ordered(items, priority_keyword=None):
+    """排序：含 priority_keyword 的券（5折主目标）排前面，再按票面数字小的排前面。
 
-    两边必须同源：曾经卡位用排序结果、溢出错用原始顺序切，导致券被漏掉或重复。"""
+    卡片位与「其他券」共用这一份顺序。两边必须同源：曾经卡位用排序结果、
+    溢出错用原始顺序切，导致券被漏掉或重复。
+    priority_keyword 为空时退化为纯票面排序（保持旧行为）。"""
     def key(item):
-        digits = re.findall(r"\d+", str((item or {}).get("coupon") or ""))
-        return int(digits[-1]) if digits else 999
+        name = str((item or {}).get("coupon") or "")
+        pri = 0 if (priority_keyword and priority_keyword in name) else 1
+        digits = re.findall(r"\d+", name)
+        return (pri, int(digits[-1]) if digits else 999)
     return sorted(items or [], key=key)
 
 
@@ -250,7 +254,7 @@ def _slots(items):
 
 
 def render_account(label, items, timings=None, extra_lines=(), meta="",
-                   footer=None):
+                   footer=None, priority_keyword=None):
     """单账号详情页：两张票券 + 溢出明细。
 
     两张卡本身已说清每张券的状态，正好两张券时不再重复列状态分布与明细表；
@@ -258,9 +262,11 @@ def render_account(label, items, timings=None, extra_lines=(), meta="",
 
     顺序与统计都以**全部券**为准：卡位取排序后前两张，溢出来自同一份排序
     结果的剩余部分；横幅统计全部券的到手数——否则溢出券里的失败会让
-    「只抢到一半」显示成「恭喜您 抢到券了」。"""
+    「只抢到一半」显示成「恭喜您 抢到券了」。
+    priority_keyword（如 "5折"）给定时，含该关键词的券优先占卡位，
+    其余（如满28减10）进「其他券」——顶部大卡只放主目标。"""
     items = list(items or [])
-    ordered = _ordered(items)
+    ordered = _ordered(items, priority_keyword)
     slots = [None, None]
     for i in range(min(2, len(ordered))):
         slots[i] = ordered[i]

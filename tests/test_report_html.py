@@ -247,6 +247,33 @@ class OverflowOrderingTest(unittest.TestCase):
         self.assertIn("券30", html)
 
 
+class PriorityCardTest(unittest.TestCase):
+    """priority_keyword 给定时，主目标券优先占顶部大卡位。"""
+
+    def _items(self):
+        return [item("【外卖券】满28减10", "already_claimed"),
+                item("【5折外卖券】立减20", "granted"),
+                item("【5折外卖券】立减25", "out_of_stock")]
+
+    def test_priority_coupons_take_card_slots(self):
+        html = report_html.render_account("老号", self._items(), meta="x",
+                                          priority_keyword="5折")
+        other_idx = html.find("其他券")
+        self.assertGreater(other_idx, 0)
+        # 两张 5 折在卡位（"其他券"之前），28-10 在「其他券」内（之后）
+        for name in ("立减20", "立减25"):
+            self.assertLess(html.find(name), other_idx)
+        self.assertGreater(html.find("满28减10"), other_idx)
+
+    def test_no_keyword_keeps_old_numeric_order(self):
+        # 不传 keyword 时退化为纯票面排序（旧行为）：28-10（末尾数字10）占卡位
+        html = report_html.render_account("老号", self._items(), meta="x")
+        other_idx = html.find("其他券")
+        self.assertGreater(other_idx, 0)
+        self.assertLess(html.find("满28减10"), other_idx)
+        self.assertGreater(html.find("立减25"), other_idx)
+
+
 class HtmlRedactionTest(unittest.TestCase):
     """HTML 报告页必须与纯文本同一口径脱敏。
 

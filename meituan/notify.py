@@ -356,7 +356,9 @@ class Notifier:
             report_html.render_account, self._safe_text(who),
             self._safe_items(items), timings=timings,
             extra_lines=self._safe_lines(extra_lines),
-            meta=self._safe_text(self._stamp()))
+            meta=self._safe_text(self._stamp()),
+            # 顶部大卡只放 5 折主目标，满28减10 等进「其他券」
+            priority_keyword=self.cfg.snipe_keyword)
         return self.notify("account_result", body, to_mails=to_mails,
                            targets=targets, html=html)
 

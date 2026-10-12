@@ -15,4 +15,4 @@
   flows.py      业务流程：ping / verify_session / single_run / LoopRunner
 """
 
-__version__ = "1.21.0"
+__version__ = "1.21.1"
