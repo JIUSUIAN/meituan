@@ -21,7 +21,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 chrono-tz = "0.10"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = "1" # 不开 preserve_order：签名只要求 sign(raw) 与发送用同一份字节，
+               # serde_json 默认按字母序序列化即可，无需保留插入顺序
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "native-tls", "json"] }
 sha1 = "0.10"
 hmac = "0.12"
