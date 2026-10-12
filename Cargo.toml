@@ -31,6 +31,10 @@ lettre = { version = "0.11", features = ["smtp-transport", "hostname", "builder"
 regex = "1"
 percent-encoding = "2"
 
+[dev-dependencies]
+# 集成测试手工复算 GL-CheckSum，验证签名字节与发送字节一致
+sha1 = "0.10"
+
 [profile.release]
 opt-level = 2
 lto = false

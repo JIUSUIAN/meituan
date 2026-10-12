@@ -194,7 +194,7 @@ Cookie 轮换回写同理——失败只影响本次落盘，下次轮换再试�
 | 层次 | 位置 | 覆盖 |
 |---|---|---|
 | 单元测试 | 各模块内 `#[cfg(test)] mod tests` | 54 项：错误映射、配置四层合并、脱敏、凭据加载/去重/路由、Cookie 跟踪、限速与闸门、报告页渲染、通知脱敏与掩码、时间与自适应提前量 |
-| 集成测试 | `tests/integration.rs` | 6 项：本地 HTTP 桩服务上的 `single_run` 全链路、`snipe_only` 跳过探针券、传输失败计入退出码、webhook 分发、缺配置只报字段名、loop 目标校验 |
+| 集成测试 | `tests/integration.rs` | 8 项：本地 HTTP 桩服务上的 `single_run` 全链路、`snipe_only` 跳过探针券、传输失败计入退出码、webhook 分发、缺配置只报字段名、loop 目标校验，外加两项**协议级**断言（必需请求头齐全、`GL-CheckSum` 公式可手工复算） |
 
 关键回归（都在测试里有对应断言）：
 
@@ -203,5 +203,22 @@ Cookie 轮换回写同理——失败只影响本次落盘，下次轮换再试�
 3. **闸门容量 1 下真实发送间隔仍被强制执行**——`slot_holds_gate_then_limiter`
 4. **跨进程锁互斥**——`file_lock_is_exclusive`
 5. **越界开火时刻被拒绝而非钳位**（`25:99` 曾会被钳成 23:59 从而等近 24 小时）——`wait_until_rejects_bad_format_without_panicking`
+6. **请求头齐全**（漏发 `Content-Type` 时服务端 WAF 返回业务码 417，
+   表现为 `--ping` 全部 `unknown` 且不报错——**这个 bug 是真实调用才发现的**，
+   单测与常规集成测试都覆盖不到）——`request_carries_all_required_headers`
+7. **签名公式可复算**——`signature_is_sha1_of_body_plus_xsrf`
 
 全部测试只访问 `127.0.0.1` 上的桩服务，不触碰任何真实第三方接口。
+
+### 5.1 真实调用验证（本地桩覆盖不到的部分）
+
+自动化测试之外，还对本项目做过一轮**真实接口**验证（只读 + 幂等操作）：
+
+| 项目 | 结果 |
+|---|---|
+| `--ping`（只读） | 3 个账号全部 `reachable`，退出码 0 |
+| 单次执行 | 与 Python 版逐字段对比**完全一致**（账号集合、每张券的 `status` / `detail` / `grant_status`） |
+| `--loop --minutes 0.25` | 7 波 14 请求，首波后正确切安全模式，JSONL 事件落盘，退出码 0 |
+
+对比时需注意**服务端限流**：Rust 与 Python 连续跑会互相触发 40007，
+必须间隔 ≥60s 再对比，否则会误判成实现差异。

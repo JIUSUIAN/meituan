@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{HeaderMap, HeaderValue, COOKIE, ORIGIN, REFERER, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, COOKIE, ORIGIN, REFERER, USER_AGENT};
 use serde_json::{json, Map, Value};
 use sha1::{Digest, Sha1};
 
@@ -204,6 +204,11 @@ impl ApiClient {
         let cookie_header = self.cookies.header();
 
         let mut headers = HeaderMap::new();
+        // 服务端按 Content-Type 决定是否解析请求体：少了它会被 WAF 直接拒（code=417）
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/json;charset=UTF-8"),
+        );
         headers.insert(
             USER_AGENT,
             HeaderValue::from_str(&self.config.user_agent)

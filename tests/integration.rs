@@ -14,10 +14,12 @@ use meituan::notify::Notifier;
 use meituan::security::{Auth, SecretsRegistry};
 use serde_json::{json, Value};
 
-/// 起一个一次性桩服务：按 URL 片段返回预置响应体，并记录收到的请求路径。
+/// 起一个一次性桩服务：按 URL 片段返回预置响应体，
+/// 并记录收到的请求路径与完整请求头（供协议级断言）。
 struct Stub {
     base: String,
     seen: Arc<Mutex<Vec<String>>>,
+    heads: Arc<Mutex<Vec<String>>>,
 }
 
 impl Stub {
@@ -25,17 +27,21 @@ impl Stub {
         let listener = TcpListener::bind("127.0.0.1:0").expect("绑定本地端口");
         let port = listener.local_addr().unwrap().port();
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let heads: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let seen_c = Arc::clone(&seen);
+        let heads_c = Arc::clone(&heads);
         let routes = Arc::new(routes);
         let acceptor = {
             let listener = listener;
             let seen = Arc::clone(&seen_c);
+            let heads = Arc::clone(&heads_c);
             let routes = Arc::clone(&routes);
             thread::spawn(move || {
                 // 每连接一个线程：顺序 accept 在并行测试下会拖慢后续请求
                 for stream in listener.incoming() {
                     let Ok(mut stream) = stream else { continue };
                     let seen = Arc::clone(&seen);
+                    let heads = Arc::clone(&heads);
                     let routes = Arc::clone(&routes);
                     thread::spawn(move || {
                         let mut buf = [0u8; 8192];
@@ -46,6 +52,7 @@ impl Stub {
                         let req = String::from_utf8_lossy(&buf[..n]).to_string();
                         let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
                         seen.lock().unwrap().push(path.clone());
+                        heads.lock().unwrap().push(req.clone());
                         let body = routes
                             .iter()
                             .find(|(frag, _)| path.contains(frag.as_str()))
@@ -69,11 +76,17 @@ impl Stub {
         Self {
             base: format!("http://127.0.0.1:{}", port),
             seen,
+            heads,
         }
     }
 
     fn seen(&self) -> Vec<String> {
         self.seen.lock().unwrap().clone()
+    }
+
+    /// 收到的全部请求头原文（每连接一份）。
+    fn heads(&self) -> Vec<String> {
+        self.heads.lock().unwrap().clone()
     }
 }
 
@@ -309,4 +322,94 @@ fn loop_runner_targets_only_snipe_coupons() {
     )
     .unwrap_err();
     assert!(err.contains("抢券目标为空"), "{}", err);
+}
+
+#[test]
+fn request_carries_all_required_headers() {
+    // 回归：曾漏发 Content-Type，服务端 WAF 直接返回 code=417，
+    // 表现为「--ping 全部 unknown」而没有任何报错——协议层必须逐项断言。
+    let stub = Stub::spawn(vec![
+        (
+            "/super-coupon/info".into(),
+            info_body(json!([
+                {"couponId": "c2", "couponName": "【5折外卖券】立减20",
+                 "couponType": "PHONE_REWARD"},
+            ])),
+        ),
+        ("/super-coupon/grant-status".into(), empty_status()),
+        (
+            "/super-coupon/grant".into(),
+            r#"{"code":200,"result":{"winPrizeInfo":{}}}"#.to_string(),
+        ),
+    ]);
+    let secrets = SecretsRegistry::new();
+    let _ = flows::single_run(
+        &[auth("177****7689")],
+        &cfg_for(&stub.base),
+        None,
+        Arc::clone(&secrets),
+        None,
+    );
+
+    let heads = stub.heads();
+    assert!(!heads.is_empty(), "桩服务应收到请求");
+    // 逐项检查必需请求头（大小写不敏感）
+    let required = [
+        "Content-Type: application/json;charset=UTF-8",
+        "GL-DeviceId:",
+        "GL-X-XSRF-TOKEN:",
+        "GL-Uid:",
+        "GL-ClientType: 60",
+        "GL-CheckSum:",
+        "Cookie:",
+        "User-Agent:",
+        "Origin: https://vip.ds.163.com",
+        "Referer: https://vip.ds.163.com/partner-perks",
+    ];
+    for head in &heads {
+        let lower = head.to_lowercase();
+        for needle in required {
+            assert!(
+                lower.contains(&needle.to_lowercase()),
+                "请求头缺少 {:?}；实际请求头：\n{}",
+                needle,
+                head
+            );
+        }
+    }
+}
+
+#[test]
+fn signature_is_sha1_of_body_plus_xsrf() {
+    // 回归：签名字节必须与发送字节完全一致（无空格、不转义 Unicode、键序固定）
+    let stub = Stub::spawn(vec![("/super-coupon/info".into(), info_body(json!([])))]);
+    let secrets = SecretsRegistry::new();
+    let a = auth("177****7689");
+    let _ = flows::single_run(
+        std::slice::from_ref(&a),
+        &cfg_for(&stub.base),
+        None,
+        Arc::clone(&secrets),
+        None,
+    );
+
+    let head = stub.heads().into_iter().next().expect("应有请求");
+    let checksum = head
+        .lines()
+        .find(|l| l.to_lowercase().starts_with("gl-checksum:"))
+        .and_then(|l| l.split_once(':'))
+        .map(|(_, v)| v.trim().to_string())
+        .expect("应有 GL-CheckSum");
+    // 手工按同一公式算一遍：SHA1(`{}` + xsrf)
+    let expected = {
+        use sha1::{Digest, Sha1};
+        let mut h = Sha1::new();
+        h.update(b"{}");
+        h.update(a.xsrf_token.as_bytes());
+        h.finalize()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    };
+    assert_eq!(checksum, expected, "GL-CheckSum 公式不符");
 }

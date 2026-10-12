@@ -11,7 +11,7 @@
 |---|---|
 | 版本 | `1.21.0`（真源 `Cargo.toml` 的 `version`） |
 | 语言 / 工具链 | Rust ≥ 1.89（2021 edition） |
-| 测试 | 60 项（54 单元 + 6 集成），全部只访问本地桩服务 |
+| 测试 | 62 项（54 单元 + 8 集成），全部只访问本地桩服务 |
 | 代码质量 | `cargo fmt --check` 与 `cargo clippy --all-targets` 均零告警 |
 | 当前活动商家 | 霸王茶姬（`brand_keyword`） |
 | 抢券目标 | 两张 5 折外卖券（`snipe_keyword="5折"`） |
@@ -252,7 +252,7 @@ stdout 是可管道解析的 JSON（日志、进度、警告全部走 stderr）�
 ## 10. 测试
 
 ```bash
-cargo test                      # 60 项：54 单元 + 6 集成
+cargo test                      # 62 项：54 单元 + 8 集成
 cargo fmt --check               # 格式检查
 cargo clippy --all-targets      # 静态检查（当前零告警）
 ```
@@ -266,6 +266,7 @@ cargo clippy --all-targets      # 静态检查（当前零告警）
 | 现象 | 原因与处理 |
 |---|---|
 | `error calling dlltool 'dlltool.exe'` | Windows GNU 工具链缺 `as`，见 1.1 节 |
+| `--ping` 全部返回 `unknown` 且无报错 | 请求缺 `Content-Type` 时服务端 WAF 会返回业务码 417；已修复并有协议级回归测试 |
 | `没有任何账号 Cookie 文件（...）` | 凭据不在当前工作目录，或 `auth_files` 名字写错；用 `MEITUAN_BASE_DIR` 指定目录 |
 | `cookies.json[1] 缺少字段: GOD_UUID` | 数组里第 2 条凭据不全，重新导出（值不会被打印） |
 | `配置字段有误（...）: unknown field` | 配置键名拼错，错误信息里会列出全部合法字段名 |
@@ -287,7 +288,7 @@ cargo clippy --all-targets      # 静态检查（当前零告警）
 | 环境变量前缀 | `MEITUAN_*` | `MEITUAN_*`（一致） |
 | 配置文件与凭据格式 | `claim.config.json` / `cookies.json` | **完全一致**，可直接复用 |
 | 通知通道与事件 | 7 通道 / 4 事件 | 一致 |
-| 测试数 | 267 | 60（覆盖关键路径与全部已知回归） |
+| 测试数 | 267 | 62（覆盖关键路径与全部已知回归） |
 
 命令行参数、配置字段名、退出码语义、报告页版式都保持一致，
 因此已有的 cron 配置与凭据文件可以原样迁移。
