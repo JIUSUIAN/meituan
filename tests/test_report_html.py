@@ -5,6 +5,7 @@
 运行：python -m unittest discover -s tests -t . -v
 """
 import unittest
+from unittest import mock
 
 from meituan import report_html
 from meituan.config import Config
@@ -213,6 +214,106 @@ class HtmlDeliveryTest(unittest.TestCase):
         self.assertEqual(["plain", "html"],
                          [part.get_content_subtype() for part in parts])
         self.assertIn("<!doctype html>", parts[1].get_content())
+
+
+class OverflowOrderingTest(unittest.TestCase):
+    """卡位与「其他券」必须用同一份顺序，否则 >2 张券会丢券、重复。"""
+
+    def _html(self, items):
+        return report_html.render_account("老号", items, meta="x")
+
+    def test_three_coupons_none_lost_or_duplicated(self):
+        html = self._html([item("券30", "failed", detail="x"),
+                           item("券10", "granted"),
+                           item("券20", "granted")])
+        for name in ("券10", "券20", "券30"):
+            self.assertIn(name, html)
+        # 券20 只应作为卡位出现（面额大字 + 券名小字 = 2 次）；
+        # 修复前溢出错用原始顺序切，它会多出现一次
+        self.assertLessEqual(html.count("券20"), 2)
+
+    def test_failed_overflow_is_not_celebrated(self):
+        html = self._html([item("券30", "failed", detail="x"),
+                           item("券10", "granted"),
+                           item("券20", "granted")])
+        self.assertNotIn("恭喜您 抢到券了！", html)
+        self.assertIn("差一点", html)
+
+    def test_all_three_granted_still_celebrates(self):
+        html = self._html([item("券30", "granted"),
+                           item("券10", "granted"),
+                           item("券20", "granted")])
+        self.assertIn("恭喜您 抢到券了！", html)
+        self.assertIn("券30", html)
+
+
+class HtmlRedactionTest(unittest.TestCase):
+    """HTML 报告页必须与纯文本同一口径脱敏。
+
+    曾经只对纯文本 redact，HTML 拿原始 items——上游把已登记凭据回显进
+    detail 时，凭据会原样出现在推给第三方的邮件里。"""
+
+    class Resp:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {"id": "mail-1"}
+
+    class Session:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, json=None, data=None, headers=None, timeout=None):
+            self.calls.append(json)
+            return HtmlRedactionTest.Resp()
+
+        def close(self):
+            pass
+
+    def setUp(self):
+        GLOBAL_SECRETS.clear()
+        self.addCleanup(GLOBAL_SECRETS.clear)
+
+    def _cfg(self):
+        return Config(notify_targets=("resend",),
+                      resend_api_key="re_k123456",
+                      resend_from="no-reply@example.com",
+                      notify_to_mails=("me@example.com",))
+
+    def _capture(self, send):
+        GLOBAL_SECRETS.register("SECRETLEAK123")
+        notifier = Notifier(config=self._cfg(), session=self.Session(),
+                            log=lambda m: None)
+        sent = {}
+        notifier.notify = mock.Mock(
+            side_effect=lambda event, text, **kw: sent.update(
+                text=text, html=kw.get("html")) or [])
+        send(notifier)
+        return sent
+
+    def test_account_html_has_no_secret(self):
+        sent = self._capture(
+            lambda n: n.notify_account("老号", [
+                item(A, "failed", detail="上游返回 SECRETLEAK123 出错")]))
+        self.assertNotIn("SECRETLEAK123", sent["html"])
+        self.assertNotIn("SECRETLEAK123", sent["text"])
+        self.assertIn(A, sent["html"])            # 正常内容不受伤
+
+    def test_summary_html_has_no_secret(self):
+        sent = self._capture(
+            lambda n: n.notify_report(
+                "result",
+                {"老号": [item(A, "failed", detail="含 SECRETLEAK123")]},
+                extra_lines=["附言也含 SECRETLEAK123"]))
+        self.assertNotIn("SECRETLEAK123", sent["html"])
+        self.assertIn(A, sent["html"])
+
+    def test_redaction_does_not_mutate_caller_items(self):
+        """脱敏只作用于 HTML 副本，调用方的 items 不被改写。"""
+        raw = [item(A, "failed", detail="含 SECRETLEAK123")]
+        self._capture(lambda n: n.notify_account("老号", raw))
+        self.assertIn("SECRETLEAK123", raw[0]["detail"])
 
 
 if __name__ == "__main__":

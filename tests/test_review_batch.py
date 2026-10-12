@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime, timedelta
@@ -20,10 +21,10 @@ from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from meituan import cli, flows
+from meituan import cli, errors, flows, security
 from meituan.config import Config, load_config
 from meituan.models import GrantEvent
-from meituan.security import load_auth, save_auth
+from meituan.security import load_auth, save_auth, SecretsRegistry
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -476,6 +477,147 @@ class CookieExportToolTest(unittest.TestCase):
         self.assertIn("GOD_UUID", err)            # 只报字段名
         self.assertNotIn("uuid-exported", err)
         self.assertFalse((d / "cookies-new.json").exists())  # 不留半成品
+
+
+# ---------------------------------------------------------------------------
+# 本批优化回归：传输失败退出码 / 跨进程锁 / 导入工具先校验再落盘
+# ---------------------------------------------------------------------------
+
+class TransportFailureExitCodeTest(unittest.TestCase):
+    """传输/解析失败要让退出码非 0，cron 才能发现「这轮根本没抢成」。"""
+
+    def _client(self, exc):
+        c = mock.MagicMock()
+        c.find_brand_coupons.return_value = (
+            {"brandId": "b", "brandName": "霸王茶姬"},
+            [flows.Coupon.from_api({"couponId": "c1",
+                                    "couponName": "【5折外卖券】立减20"})])
+        c.grant_status.return_value = {}
+        c.grant.side_effect = exc
+        c.secrets = SecretsRegistry()
+        return c
+
+    def test_single_run_flags_transport_failure(self):
+        with mock.patch.object(flows, "ApiClient") as cls:
+            cls.return_value.__enter__.return_value = self._client(
+                errors.ApiTransportError("网络不可达"))
+            report, any_error = flows.single_run(
+                [dict(AUTH, label="a")], config=Config())
+        self.assertEqual("error", report["a"][0]["status"])
+        self.assertIn("传输错误", report["a"][0]["detail"])
+        self.assertTrue(any_error)
+
+    def test_loop_exit_code_flags_transport_failure(self):
+        report = {"a": [{"coupon": "A", "status": "error",
+                         "detail": "传输错误: 网络不可达"}]}
+        self.assertTrue(cli._loop_has_error(report))
+
+    def test_sold_out_is_not_an_execution_failure(self):
+        """业务上没抢到（60001）不是执行失败，退出码应保持 0。"""
+        report = {"a": [{"coupon": "A", "status": "out_of_stock"}]}
+        self.assertFalse(cli._loop_has_error(report))
+
+
+class CrossProcessLockTest(unittest.TestCase):
+    """凭据回写的读-改-写必须跨进程原子：曾经只有进程内 threading.Lock，
+    两个实例（cron + 手动）并发时会互相覆盖对方刚轮换的会话。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.path = self.dir / "cookies.json"
+        self.path.write_text(json.dumps([AUTH], ensure_ascii=False),
+                             encoding="utf-8")
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_lock_is_exclusive(self):
+        ready = threading.Event()
+        order = []
+
+        def hold():
+            with security._cross_process_lock(self.path, timeout=5):
+                order.append("A-in")
+                ready.set()
+                time.sleep(0.25)
+                order.append("A-out")
+
+        def other():
+            ready.wait(5)
+            with security._cross_process_lock(self.path, timeout=5):
+                order.append("B-in")
+
+        ta, tb = threading.Thread(target=hold), threading.Thread(target=other)
+        ta.start(); tb.start(); ta.join(); tb.join()
+        self.assertEqual(["A-in", "A-out", "B-in"], order)
+
+    def test_reentrant_acquire_times_out_instead_of_sharing(self):
+        with security._cross_process_lock(self.path, timeout=5):
+            with self.assertRaises(OSError):
+                with security._cross_process_lock(self.path, timeout=0.2):
+                    pass
+
+    def test_concurrent_updates_do_not_clobber_each_other(self):
+        path = self.dir / "multi.json"
+        path.write_text(json.dumps([
+            dict(AUTH, label="A", cookies={"JSESSIONID": "ja"}),
+            dict(AUTH, label="B", cookies={"JSESSIONID": "jb"}),
+        ], ensure_ascii=False), encoding="utf-8")
+
+        def worker(index):
+            for k in range(15):
+                security.update_auth_cookies(
+                    {"JSESSIONID": "%s-%d" % (index, k)}, path, index=index)
+
+        ts = [threading.Thread(target=worker, args=(i,)) for i in (0, 1)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertIn("0-", data[0]["cookies"]["JSESSIONID"])
+        self.assertIn("1-", data[1]["cookies"]["JSESSIONID"])
+
+
+class ImportToolValidatesBeforeWritingTest(unittest.TestCase):
+    """校验通过前不碰正式文件：曾经的顺序会先覆盖再校验、失败即删除，
+    可能毁掉被覆盖的旧凭据；merge 的回滚快照还会盖掉并发轮换的新会话。"""
+
+    def _run(self, items, out, target_content=None):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(d), True)
+        src = d / "export.json"
+        src.write_text(json.dumps(items), encoding="utf-8")
+        if target_content is not None:
+            (d / out).write_text(json.dumps(target_content, ensure_ascii=False),
+                                 encoding="utf-8")
+        err, out_buf = io.StringIO(), io.StringIO()
+        with mock.patch.object(cookie_tool, "DIR", d):
+            with contextlib.redirect_stderr(err), \
+                    contextlib.redirect_stdout(out_buf):
+                code = cookie_tool.main([str(src), "-o", out])
+        return code, d, err.getvalue(), out_buf.getvalue()
+
+    def test_failed_validation_leaves_existing_file_intact(self):
+        original = [dict(AUTH, label="老号")]
+        incomplete = [c for c in EXPORT if c["name"] != "GOD_UUID"]
+        code, d, err, _ = self._run(incomplete, "cookies.json", original)
+        self.assertEqual(1, code)
+        self.assertIn("GOD_UUID", err)
+        # 正式文件一字节都没动
+        self.assertEqual(original, json.loads(
+            (d / "cookies.json").read_text(encoding="utf-8")))
+        # 不留中转文件
+        self.assertEqual([], list(d.glob("*.tmp")))
+
+    def test_failed_validation_does_not_create_lock_file(self):
+        incomplete = [c for c in EXPORT if c["name"] != "GOD_UUID"]
+        code, d, _, _ = self._run(incomplete, "cookies-new.json")
+        self.assertEqual(1, code)
+        self.assertEqual([], list(d.glob("*.lock")))
+
+    def test_success_writes_and_leaves_no_tmp(self):
+        code, d, _, _ = self._run(EXPORT, "cookies-new.json")
+        self.assertEqual(0, code)
+        self.assertTrue((d / "cookies-new.json").exists())
+        self.assertEqual([], list(d.glob("*.tmp")))
 
 
 if __name__ == "__main__":

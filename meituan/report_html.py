@@ -230,12 +230,19 @@ def _page(headline, headline_color, kind, body, footer):
         '</div></body></html>')
 
 
+def _ordered(items):
+    """按票面数字小的排前面。卡片位与「其他券」共用这一份顺序。
+
+    两边必须同源：曾经卡位用排序结果、溢出错用原始顺序切，导致券被漏掉或重复。"""
+    def key(item):
+        digits = re.findall(r"\d+", str((item or {}).get("coupon") or ""))
+        return int(digits[-1]) if digits else 999
+    return sorted(items or [], key=key)
+
+
 def _slots(items):
     """把结果摆进左右两个卡位：按票面数字小的放左边，凑不满就留空位。"""
-    def key(item):
-        digits = re.findall(r"\d+", str(item.get("coupon") or ""))
-        return int(digits[-1]) if digits else 999
-    ordered = sorted(items or [], key=key)
+    ordered = _ordered(items)
     slots = [None, None]
     for i in range(min(2, len(ordered))):
         slots[i] = ordered[i]
@@ -247,12 +254,20 @@ def render_account(label, items, timings=None, extra_lines=(), meta="",
     """单账号详情页：两张票券 + 溢出明细。
 
     两张卡本身已说清每张券的状态，正好两张券时不再重复列状态分布与明细表；
-    只有超出卡位的券才补一张「其他券」表。"""
+    只有超出卡位的券才补一张「其他券」表。
+
+    顺序与统计都以**全部券**为准：卡位取排序后前两张，溢出来自同一份排序
+    结果的剩余部分；横幅统计全部券的到手数——否则溢出券里的失败会让
+    「只抢到一半」显示成「恭喜您 抢到券了」。"""
     items = list(items or [])
-    slots = _slots(items)
+    ordered = _ordered(items)
+    slots = [None, None]
+    for i in range(min(2, len(ordered))):
+        slots[i] = ordered[i]
     cards, lit = _cards_block(slots, timings)
-    headline, color = _headline(lit, sum(1 for s in slots if s))
-    overflow = items[2:]
+    headline, color = _headline(sum(1 for it in items if _is_lit(it)),
+                                len(items))
+    overflow = ordered[2:]
     body = cards
     if overflow:
         body += ('<div style="font-size:12px;color:#8a6a1f;font-weight:700;'

@@ -128,6 +128,47 @@ class GrantPacingTest(unittest.TestCase):
         limiter.wait()
         self.assertGreaterEqual(time.time() - t0, 0.04)
 
+    def test_gap_holds_when_threads_queue_on_the_gate(self):
+        """先取并发容量、再卡间隔——顺序反了会让闸门放开的瞬间挤在一起发出。
+
+        构造：闸门容量 1（严格串行）+ 间隔 0.2s + 3 个线程。
+        修复前顺序是「先限速、后等闸门」：三个线程各自拿到时间槽后排在
+        闸门口，实际发送几乎同时；修复后实际发送间隔就是配置的 0.2s。"""
+        from meituan.models import Coupon
+        from meituan.security import SecretsRegistry
+
+        class FastClient:
+            secrets = SecretsRegistry()
+
+            def grant(self, brand_id, coupon):
+                return {"winPrizeInfo": {}}
+
+        def epoch(ts):
+            from datetime import datetime
+            return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f").timestamp()
+
+        pacing = GrantPacing(0.2, 1, 0.2, 1)
+        client = FastClient()
+        sends = []
+        lock = threading.Lock()
+
+        def work(i):
+            _, _, ts = flows.try_grant(
+                client, "b", Coupon(coupon_id="c%d" % i), pacing=pacing,
+                config=Config())
+            with lock:
+                sends.append(ts)
+
+        threads = [threading.Thread(target=work, args=(i,)) for i in range(3)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+
+        self.assertEqual(3, len(sends))
+        moments = sorted(epoch(s) for s in sends)
+        gaps = [b - a for a, b in zip(moments, moments[1:])]
+        self.assertGreaterEqual(min(gaps), 0.15,
+                                "实际发送间隔 %s 小于配置的 0.2s" % gaps)
+
 
 class LoadConfigTest(unittest.TestCase):
     """P1：配置分层 默认值 < JSON 文件 < 环境变量 < CLI overrides。"""

@@ -6,9 +6,9 @@
 
 | 项 | 值 |
 |---|---|
-| 版本 | `1.20.0`（真源 `meituan/__init__.py:__version__`） |
+| 版本 | `1.21.0`（真源 `meituan/__init__.py:__version__`） |
 | 运行环境 | Python ≥ 3.9，依赖 `requests`（Windows 另需 `tzdata`） |
-| 测试 | 251 个，全部 mock，不访问真实第三方接口 |
+| 测试 | 267 个，全部 mock，不访问真实第三方接口 |
 | 当前活动商家 | 霸王茶姬（`brand_keyword`） |
 | 抢券目标 | 两张 5 折外卖券（`snipe_keyword="5折"`） |
 | 探针券 | 【外卖券】满28减10（`--verify-session` 用，不参与抢券） |
@@ -196,6 +196,11 @@ meituan --loop 2>/dev/null > result.json
 未知业务码一律记 `failed` 并保留原码，**不做字符串猜测、不误分类**。
 本地预检：`leftStock == 0` → `out_of_stock`（未知按未抢光）；`PLACEHOLDER` → `skipped`；
 `DIRECT_LINK` → `direct_link`。
+
+传输/解析失败（网络异常、超时、HTTP 非 2xx、响应不是合法 JSON）记为 `error`，
+`detail` 形如 `传输错误: ...`。它**不是业务状态**：`--loop` 中照常重试，
+但会进入退出码判定——cron 与告警因此能发现「这一轮根本没抢成」，
+而业务上的没抢到（60001）不会误报成失败。
 
 `send_ts`（实际发出 POST 的时刻，百分之一秒）在限速等待与在飞闸门都等到之后才采集，
 收尾统计里的「第一波发送时刻」因此能真正反映错峰效果。
@@ -404,7 +409,7 @@ meituan/
   report_html.py          邮件报告页：账号详情双券卡 + 汇总页全部券列表
   flows.py                RunLogger、ping / verify_session / single_run / LoopRunner
 tools/import_cookie_export.py   扩展导出 -> 认证文件（支持并入数组）
-tests/                    251 个 unittest（全部 mock）
+tests/                    267 个 unittest（全部 mock）
 .github/workflows/ci.yml  多版本 Python 测试 + compileall + 凭据入库守卫
 ```
 
@@ -432,17 +437,23 @@ CI 在 `ubuntu-latest` 上跑 Python 3.9 / 3.11 / 3.13 三版本：装依赖 →
 
 ## 15. 已知限制
 
-- 单次执行的 `grant_status` 取的是**领取前**查询到的状态，不是领取后复核（loop 会复核）。
-- 限速器与在飞闸门分两步获取，理论上「已通过限速、堵在闸门」的请求可能在闸门放开后紧邻发出，
-  实际间隔可能小于配置值；`--loop` 的安全模式仍以 0.5s / 2 并发为基础。
+- 单次执行的 `grant_status` 取的是**领取前**查询到的状态，不是领取后复核（`--loop` 会复核）。
 - loop 的 `deadline` 只约束「是否提交下一波」，不取消已提交任务，也不含开火等待、线程池收尾、
   收尾复核与通知耗时，不是进程级硬超时。
-- 跨进程并发回写凭据文件只有进程内锁（PID 中转文件 + `os.replace` 保证原子可见，
-  但不防两个进程的读-改-写互相覆盖）；调度前请确认同一时刻只有一个实例在跑。
 - `--notify-test` 与真实投递都不能证明各邮箱客户端的最终渲染效果。
+- 凭据回写有跨进程锁（旁路锁文件 `<认证文件>.lock`，10 秒超时），两个实例同时跑时
+  可能有一方拿不到锁而放弃这次回写（不会与对方交叉覆盖）；调度上仍建议保证同一时刻
+  只有一个实例在跑。
 
 ## 16. 版本与演进
 
+`1.21.0` 稳定性与正确性修补：HTML 报告页与纯文本同一口径脱敏（`_safe_items` /
+`_safe_lines`，堵住上游回显凭据时随邮件外泄）；账号详情页 >2 张券时丢券/重复与
+横幅误报祝贺（`_ordered` 统一卡片位与溢出顺序，headline 按全部券统计）；传输/解析失败
+改记 `error` 并进入退出码判定（不再把网络故障当「正常没抢到」）；`GrantPacing.slot`
+改为「先取并发容量、再卡间隔」，修复闸门放开瞬间多请求挤在一起发出；凭据回写增加
+跨进程旁路锁 `<认证文件>.lock`（Windows 共享冲突重试）；导入工具改为先在中转文件上
+校验、通过才落盘，不再先覆盖再删除。`.gitignore` 补 `*.lock` 等。
 `1.20.0` chagee 全量改名为 meituan：移除 `CHAGEE_` 旧环境变量前缀，只保留 `MEITUAN_`；
 新增 `adaptive_lead`（预热 RTT 自适应开火提前量）、`early_stop_all_soldout`（首波全抢光
 确认一波后提前收工）、`wait_until` 跨零点保护、预热并行化；新增 `cookies.example.json`。

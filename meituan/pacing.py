@@ -12,7 +12,8 @@ from contextlib import contextmanager
 class RateLimiter:
     """全局领取请求限速器：任意两次 grant 之间至少间隔 min_gap 秒。
 
-    间隔是下界：拿到时间槽后仍可能排队等闸门，真实间隔只会更大。"""
+    由 GrantPacing 在**持有在飞闸门之后**调用，因此这里的「间隔」就是真实
+    发送间隔的下界：等待发生在持闸期间，拿到时间槽即可发出。"""
 
     def __init__(self, min_gap):
         self.min_gap = min_gap
@@ -70,8 +71,12 @@ class GrantPacing:
 
     @contextmanager
     def slot(self):
-        self.limiter.wait()  # 启动错峰
-        with self.gate.slot():  # 限制同时在飞请求数
+        # 先取并发容量，再在真正发送前统一卡最小间隔。
+        # 反过来（先限速、后等闸门）会让多个已经错峰的线程在闸门放开的瞬间
+        # 挤在一起发出——0.5s 的安全间隔可能被打成 ~0s。
+        # 持闸等待期间该线程仍占一个在飞位，容量统计保持真实。
+        with self.gate.slot():
+            self.limiter.wait()
             yield
 
     def enter_sustained_mode(self):

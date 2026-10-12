@@ -16,4 +16,5 @@ dist/
 *.tmp
 *.jsonl
 *.log
+*.lock
 __pycache__/

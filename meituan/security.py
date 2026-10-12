@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.parse
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 # 敏感字段清单：值可进内存与请求头，但不得进日志、异常信息或版本库
@@ -264,6 +265,76 @@ def load_auths(paths, base_dir=None, secrets=None):
 # 读-改-写需要进程内串行：同一文件里多个账号并发轮换时不能互相覆盖条目
 _FILE_LOCK = threading.Lock()
 
+try:                                  # POSIX
+    import fcntl
+except ImportError:                   # pragma: no cover - Windows
+    fcntl = None
+
+try:                                  # pragma: no cover - Windows only
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
+
+@contextmanager
+def _cross_process_lock(target, timeout=10.0):
+    """跨进程排他锁：把「读 -> 改 -> 写」整段包起来。
+
+    进程内 `_FILE_LOCK` 只防同进程多线程，防不住 cron 与手动运行并发：
+    两个进程各自读到旧数组、各改自己那一条、再先后 `os.replace`，
+    后写的会把前者刚轮换的会话覆盖掉——表现为「明明刚续命，下次又失效」。
+
+    用**旁路锁文件**（目标同名 + `.lock`）：不能锁目标本身，
+    `os.replace` 会把目标换成新 inode，锁在旧 inode 上直接失效。
+    锁文件不含凭据，需 `*.lock` 已被 .gitignore 覆盖。
+
+    Windows 上 `msvcrt.locking` 是强制锁：别人持锁时「以写方式打开锁文件」
+    本身就会共享冲突，所以打开与加锁都要放进重试，而不是只重试加锁。
+    POSIX 用 `flock`（不阻止打开，只阻止加锁）。
+
+    拿不到锁时抛 OSError：调用方按 best-effort 忽略——
+    宁可放弃这次回写，也不能覆盖别人的更新。
+    """
+    p = Path(target)
+    lock_path = p.with_name(p.name + ".lock")
+    deadline = time.monotonic() + timeout
+    fd = None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif msvcrt is not None:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            break
+        except OSError:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                fd = None
+            if time.monotonic() >= deadline:
+                raise OSError("等待凭据文件锁超时（可能有两个实例在跑）: %s"
+                              % p.name) from None
+            time.sleep(0.02)
+    try:
+        yield
+    finally:
+        try:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            elif msvcrt is not None:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
 
 def _atomic_write_json(p, data):
     """原子写 JSON：pid 后缀中转文件 + rename，POSIX 下收紧 600。
@@ -293,8 +364,11 @@ def _atomic_write_json(p, data):
 def write_auth_file(data, path):
     """原子写入整个认证文件（单对象或多账号数组），POSIX 下收紧 600 权限。
 
-    轮换回写不要用这个（整体覆盖会抹掉同文件其他账号），用 update_auth_cookies。"""
-    _atomic_write_json(path, data)
+    轮换回写不要用这个（整体覆盖会抹掉同文件其他账号），用 update_auth_cookies。
+    持跨进程锁：与 update_auth_cookies 并发时才不会把这个整体写插进对方的
+    读-改-写中间。"""
+    with _cross_process_lock(path):
+        _atomic_write_json(path, data)
 
 
 def save_auth(auth, path):
@@ -306,25 +380,32 @@ def save_auth(auth, path):
     要用 update_auth_cookies。"""
     data = {k: v for k, v in auth.items()
             if not k.startswith("_") and k != "label"}
-    _atomic_write_json(path, data)
+    with _cross_process_lock(path):
+        _atomic_write_json(path, data)
 
 
 def update_auth_cookies(cookies, path, index=None):
     """把轮换后的 cookies 就地写回文件对应条目，其余字段（含 label）原样保留。
 
     index 为 None -> 单对象文件；给定 -> 多账号数组文件的第 index 条
-    （load_auths 会记下 _auth_index）。读-改-写全程持锁。"""
+    （load_auths 会记下 _auth_index）。
+
+    读-改-写全程持**两把**锁：`_FILE_LOCK` 串行同进程的多账号并发轮换，
+    `_cross_process_lock` 挡住另一个进程实例——否则两个进程读到同一份旧
+    数组、各改一条再先后替换，先写的更新会被静默覆盖。"""
     p = Path(path)
-    with _FILE_LOCK:
-        raw = _read_json(p, p.name)
-        if index is None:
-            if not isinstance(raw, dict):
-                raise ValueError("认证文件是数组格式但缺少条目序号: %s" % path)
-            raw["cookies"] = dict(cookies)
-        elif (isinstance(raw, list) and 0 <= index < len(raw)
-              and isinstance(raw[index], dict)):
-            raw[index]["cookies"] = dict(cookies)
-        else:
-            raise ValueError("认证文件里找不到第 %s 个账号条目: %s"
-                             % (index, path))
-        _atomic_write_json(p, raw)
+    with _cross_process_lock(path):
+        with _FILE_LOCK:
+            raw = _read_json(p, p.name)
+            if index is None:
+                if not isinstance(raw, dict):
+                    raise ValueError("认证文件是数组格式但缺少条目序号: %s"
+                                     % path)
+                raw["cookies"] = dict(cookies)
+            elif (isinstance(raw, list) and 0 <= index < len(raw)
+                  and isinstance(raw[index], dict)):
+                raw[index]["cookies"] = dict(cookies)
+            else:
+                raise ValueError("认证文件里找不到第 %s 个账号条目: %s"
+                                 % (index, path))
+            _atomic_write_json(p, raw)

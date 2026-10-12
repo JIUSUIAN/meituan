@@ -8,21 +8,23 @@
 两种写法：
   单对象文件    python tools/import_cookie_export.py export.json -o cookies-a.json
   并入多账号文件 python tools/import_cookie_export.py export.json -o cookies.json \
-                     --merge --label 小号
+                     --merge --label 177****7689
   （--merge 按 label 定位：同 label 替换该条，否则追加，其他账号原样不动；
-    校验不过会回滚成原文件，不会毁掉同文件里的其他账号）
+    先在中转文件上校验，通过才落盘——校验不过时正式文件一个字节都不动）
 
 凭据内容全程不打印：只输出 cookie 数量、label 与（如有）缺失字段名。
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from meituan.config import DIR                        # noqa: E402
-from meituan.security import load_auths, write_auth_file  # noqa: E402
+from meituan.security import (load_auths,             # noqa: E402
+                              _atomic_write_json, _cross_process_lock)
 
 
 def collect_cookies(raw, domain=None):
@@ -121,24 +123,32 @@ def main(argv=None):
     out_path = DIR / args.output
     entry = build_entry(cookies, args.label or out_path.stem)
 
-    # 先留住原内容：校验不过要能回滚，不能毁掉同文件里的其他账号
+    # 合并模式下先确认目标文件是合法数组（格式不对直接报错，不做任何写入）
     before = existing_entries(out_path, ap) if args.merge else None
     if args.merge:
         payload, action = merge_entry(list(before), entry)
     else:
         payload, action = entry, "整体写入"
-    write_auth_file(payload, out_path)
 
+    # 先写中转文件并在真实加载路径上校验，通过才替换正式文件。
+    # 曾经的顺序是「先写正式文件、后校验、失败再 unlink/回滚」：
+    # 非 merge 模式下会删掉被覆盖的旧凭据；merge 的回滚快照还会盖掉
+    # 校验期间别的进程刚轮换写入的新会话。现在正式文件在校验通过前
+    # 一个字节都不会被碰。
+    tmp_path = out_path.with_name("%s.new.%d.tmp" % (out_path.name, os.getpid()))
     try:
-        load_auths([args.output], base_dir=DIR)
-    except ValueError as e:
-        if args.merge and before:
-            write_auth_file(before, out_path)      # 回滚，其他账号不受影响
-        else:
-            out_path.unlink(missing_ok=True)
-        back = "已回滚" if (args.merge and before) else "已删除"
-        print("校验失败，%s %s：%s" % (back, args.output, e), file=sys.stderr)
+        _atomic_write_json(tmp_path, payload)
+        load_auths([tmp_path.name], base_dir=DIR)
+    except (ValueError, OSError) as e:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        print("校验失败，未写入 %s：%s" % (out_path, e), file=sys.stderr)
         return 1
+    # 落盘走目标文件的跨进程锁，避免与并发轮换的读-改-写交叉
+    with _cross_process_lock(out_path):
+        os.replace(tmp_path, out_path)
     print("已%s %s（%d 个 cookie，label=%s），校验通过。"
           "建议接着跑：python claim.py --verify-session --accounts %s"
           % (action, out_path, len(cookies), entry["label"], entry["label"]))

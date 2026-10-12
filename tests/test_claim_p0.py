@@ -216,9 +216,13 @@ class GrantStatusMappingTest(unittest.TestCase):
         self.assertIn("code=99999", detail)  # 保留原始 code
 
     def test_transport_error_not_business_status(self):
+        """传输/解析失败不是服务端业务答复：记 error 而非 failed。
+
+        error 会进入退出码判定（cron/告警能感知这轮没抢成），
+        failed 仅表示「服务端答复了但不是成功」。"""
         client = make_client([requests.ConnectionError("down")])
         status, detail, _ = flows.try_grant(client, "b", COUPON)
-        self.assertEqual(status, "failed")
+        self.assertEqual(status, "error")
         self.assertIn("传输错误", detail)
 
     def test_granted_success(self):

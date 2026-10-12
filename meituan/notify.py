@@ -276,6 +276,35 @@ class Notifier:
         except Exception:
             return None
 
+    def _safe_text(self, value):
+        """动态字段脱敏：HTML 侧与纯文本侧必须同一口径。
+
+        券名 / detail / grant_status 都来自远端响应，服务端可能把已登记的凭据
+        回显出来；纯文本侧早就有 redact，HTML 侧不能例外。"""
+        if value is None:
+            return ""
+        return self.secrets.redact(str(value))
+
+    def _safe_items(self, items):
+        """给 HTML 渲染用的条目副本：动态文本字段先脱敏，不改动调用方数据。
+
+        返回副本而不是原地改——同一份 items 还要用于纯文本与调用方统计。"""
+        out = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                out.append(item)
+                continue
+            safe = dict(item)
+            for key in ("coupon", "coupon_type", "status", "grant_status",
+                        "detail"):
+                if key in safe:
+                    safe[key] = self._safe_text(safe[key])
+            out.append(safe)
+        return out
+
+    def _safe_lines(self, lines):
+        return [self._safe_text(x) for x in (lines or ())]
+
     def notify_report(self, event, report, extra_lines=()):
         """把 {label: [item...]} 形式的报告摘要发出去（label 默认掩码）。"""
         lines = []
@@ -283,7 +312,7 @@ class Notifier:
         masked = {}
         for label, items in (report or {}).items():
             who = mask_label(label) if self.cfg.notify_mask_labels else label
-            masked[who] = items
+            masked[self._safe_text(who)] = self._safe_items(items)
             parts = []
             for item in items or []:
                 status = item.get("status") or "?"
@@ -294,8 +323,8 @@ class Notifier:
         if statuses:
             body = "状态分布 %s\n%s" % (statuses, body)
         html = self._render_html(report_html.render_summary, masked,
-                                 extra_lines=list(extra_lines),
-                                 meta=self._stamp())
+                                 extra_lines=self._safe_lines(extra_lines),
+                                 meta=self._safe_text(self._stamp()))
         return self.notify(event, body, html=html)
 
     def notify_account(self, label, items, timings=None, extra_lines=(),
@@ -323,10 +352,11 @@ class Notifier:
         if not lines:
             lines.append("无结果")
         body = "\n".join([who] + lines + list(extra_lines))
-        html = self._render_html(report_html.render_account, who, items,
-                                 timings=timings,
-                                 extra_lines=list(extra_lines),
-                                 meta=self._stamp())
+        html = self._render_html(
+            report_html.render_account, self._safe_text(who),
+            self._safe_items(items), timings=timings,
+            extra_lines=self._safe_lines(extra_lines),
+            meta=self._safe_text(self._stamp()))
         return self.notify("account_result", body, to_mails=to_mails,
                            targets=targets, html=html)
 

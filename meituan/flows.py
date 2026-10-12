@@ -181,7 +181,8 @@ def try_grant(client, brand_id, coupon, pacing=None, config=None):
     pacing 提供时走限速+在飞闸门；send_ts 是**实际发出 POST 前**的时刻
     （限速与闸门都等到之后才取，未发请求时为 None）——第一波发送时刻统计
     靠它才看得出错峰效果。status 取自 GRANT_CODE_STATUS 映射或 granted/failed，
-    未知 code 保留原码不误分类。"""
+    未知 code 保留原码不误分类；传输/解析失败记 error（会进退出码判定）。
+    """
     cfg = config or client.config
     if coupon.sold_out():
         return "out_of_stock", "已抢光", None
@@ -206,7 +207,10 @@ def try_grant(client, brand_id, coupon, pacing=None, config=None):
                                  client.secrets.redact(e.message)[:200]),
                 send_ts)
     except ApiTransportError as e:
-        return ("failed", "传输错误: %s" % client.secrets.redact(str(e))[:200],
+        # 传输/解析失败不是服务端的业务答复，记 error 而非 failed：
+        # error 会进入退出码判定（cron / 告警能感知「这一轮根本没抢成」），
+        # failed 只表示「服务端给了答复但不是成功」。
+        return ("error", "传输错误: %s" % client.secrets.redact(str(e))[:200],
                 send_ts)
 
 
@@ -302,6 +306,10 @@ def _single_run_accounts(auths, cfg, log, report):
                              "detail": str(e)[:200]})
             any_error = True
         log("[%s] 单次执行结束" % label)
+        # 传输/解析失败（error）意味着这一轮没有真正抢成，退出码必须反映，
+        # 否则 cron / 告警会把网络故障当成「正常没抢到」
+        if any((o or {}).get("status") == "error" for o in outcomes):
+            any_error = True
         report[label] = outcomes
     return any_error
 
