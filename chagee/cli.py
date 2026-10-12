@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""命令行入口：参数解析、配置装配、分发到 flows。"""
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+from .config import DIR, Config, load_config
+from .flows import beijing_ts, loop_run, ping, single_run, verify_session
+from .notify import Notifier, account_routing, register_config_secrets
+from .security import load_auths
+
+# 开火时刻：HH:MM[:SS[.毫秒]]，秒可省略
+FIRE_AT_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?$")
+
+
+def _run_log_name(cfg, prefix):
+    return str(Path(cfg.run_log_dir) /
+               ("%s-%s.log" % (prefix,
+                               beijing_ts().replace(" ", "_").replace(":", ""))))
+
+
+# 这些终态代表本次运行实质失败（登录态失效/执行异常），退出码必须反映出来，
+# 否则 cron 等自动化层看到的永远是成功
+_LOOP_FAILURE_STATUSES = {"auth_expired", "error"}
+
+
+def _loop_has_error(report):
+    """loop 报告里任一账号出现失败终态即视为有错。"""
+    if not report:
+        return True
+    return any(item.get("status") in _LOOP_FAILURE_STATUSES
+               for items in report.values()
+               for item in (items or []))
+
+
+def _fire_at(value):
+    """argparse type：格式不合法直接人话报错，不留到 wait_until 抛 traceback。"""
+    if not FIRE_AT_RE.match(value):
+        raise argparse.ArgumentTypeError(
+            "开火时刻格式应为 HH:MM[:SS[.毫秒]]，例如 14:00:00.000，收到: %s"
+            % value)
+    parts = value.split(":")
+    h, m = int(parts[0]), int(parts[1])
+    s = float(parts[2]) if len(parts) > 2 else 0.0
+    if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s < 60):
+        raise argparse.ArgumentTypeError("开火时刻超出合法范围: %s" % value)
+    return value
+
+
+def _load_auths(cfg):
+    """加载全部账号凭据（一个文件可是单对象，也可是多账号数组）。
+    配置里显式写了却不存在的文件要警告——静默跳过会让人以为在双账号并发，
+    实际只跑了单账号。"""
+    auths = []
+    for f in cfg.auth_files:
+        if (DIR / f).exists():
+            auths.extend(load_auths([f], base_dir=DIR))
+        elif f not in Config.auth_files:
+            print("警告: 配置指定的认证文件不存在，已跳过: %s" % f,
+                  file=sys.stderr)
+    if not auths:
+        raise FileNotFoundError(
+            "没有任何账号 Cookie 文件（%s）" % " / ".join(cfg.auth_files))
+    return auths
+
+
+def _filter_accounts(auths, spec, ap):
+    """--accounts 子集过滤：按 label 或认证文件名（含/不含扩展名）匹配。"""
+    wanted = {s.strip() for s in spec.split(",") if s.strip()}
+    kept = []
+    for a in auths:
+        p = Path(a.get("_auth_file") or a["label"])
+        if a["label"] in wanted or p.name in wanted or p.stem in wanted:
+            kept.append(a)
+    if not kept:
+        ap.error("--accounts 未匹配到任何账号: %s" % spec)
+    return kept
+
+
+def _load_accounts_for_test(cfg):
+    """尽力加载账号（用于逐通道自检）；没有凭据文件时返回空列表。"""
+    try:
+        return load_auths(cfg.auth_files, base_dir=DIR)
+    except Exception:
+        return []
+
+
+def _fmt_results(results):
+    return {ch: {"ok": ok, "detail": msg} for ch, ok, msg in results}
+
+
+def _notify_test(cfg, ap):
+    """发测试消息验证通道真能送达：全局通道一条，带路由的账号各一条。
+
+    账号条目里的 notify / notify_mail 决定「这个账号的详情走哪条通道、发给谁」，
+    自检就按同样的路由各发一条，配置对不对一眼看得出来。"""
+    notifier = Notifier.from_config(cfg)
+    accounts = _load_accounts_for_test(cfg)
+    warn = lambda msg: print(msg, file=sys.stderr)          # noqa: E731
+    out = {}
+    try:
+        if notifier.enabled:
+            out["__global__"] = notifier.notify(
+                "test", "这是一条 chagee 通知测试消息（全局通道）。",
+                force=True, to_mails=tuple(cfg.notify_to_mails or ()) or None)
+        for auth in accounts:
+            targets, to_mails = account_routing(auth, warn=warn)
+            if not (targets or to_mails):
+                continue
+            out[auth["label"]] = notifier.notify(
+                "test", "这是一条 chagee 账号路由测试消息。",
+                force=True, to_mails=to_mails, targets=targets)
+        if not out:
+            ap.error("没有可发的测试：notify_targets 为空，且账号条目没写 "
+                     "notify / notify_mail（可用 --notify-test 前先配好通道）")
+    finally:
+        notifier.close()
+    print(json.dumps({who: {ch: {"ok": ok, "detail": msg}
+                            for ch, ok, msg in results}
+                      for who, results in out.items()},
+                     ensure_ascii=False, indent=2))
+    flat = [ok for results in out.values() for _, ok, _ in results]
+    return 0 if flat and all(flat) else 1
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="claim.py")
+    ap.add_argument("--loop", action="store_true", help="循环抢券模式（并发+错峰）")
+    ap.add_argument("--minutes", type=float, default=None,
+                    help="循环持续分钟数（默认 10，可被配置/环境变量覆盖）")
+    ap.add_argument("--interval", type=float, default=None,
+                    help="每轮间隔秒数（默认 2.0，可被配置/环境变量覆盖）")
+    ap.add_argument("--fire-at", type=_fire_at, default=None,
+                    help="开火时刻 HH:MM[:SS[.毫秒]]，到点才打第一波（已过则立即开火）")
+    ap.add_argument("--fire-lead", type=float, default=None,
+                    help="开火提前量秒数（补偿首波网络往返；整点抢实测响应 "
+                         "1.8~3.2s，建议 0.3）")
+    ap.add_argument("--config", default=None,
+                    help="JSON 配置文件路径（默认同目录 claim.config.json，存在才读）")
+    ap.add_argument("--accounts", default=None,
+                    help="只运行指定账号（逗号分隔，按 label 或认证文件名匹配）")
+    ap.add_argument("--notify", dest="notify", action="store_true", default=None,
+                    help="强制开启通知（按配置的 notify_targets 通道发送）")
+    ap.add_argument("--no-notify", dest="notify", action="store_false",
+                    default=None, help="本次运行不发送通知")
+    ap.add_argument("--notify-test", dest="notify_test", action="store_true",
+                    help="按配置的通道发一条测试消息后退出（校验通道可用性）")
+    ap.add_argument("--ping", action="store_true",
+                    help="只读健康检查：仅调用 info/grant-status 只读接口，"
+                         "无业务副作用；无法证明登录态时返回 reachable")
+    ap.add_argument("--verify-session", action="store_true",
+                    help="会话验证：有业务副作用！尝试领取探针券以证明登录态，"
+                         "若探针券当天未领会实际领掉一张")
+    args = ap.parse_args(argv)
+
+    if args.ping and args.verify_session:
+        ap.error("--ping 与 --verify-session 互斥（前者只读，后者有副作用）")
+
+    cfg = load_config(path=args.config, overrides={
+        "loop_minutes": args.minutes,
+        "loop_interval": args.interval,
+        "fire_at": args.fire_at,
+        "fire_lead": args.fire_lead,
+        "notify_enabled": args.notify,
+    })
+
+    # 通知凭据（管理密码/token/webhook）立刻登记脱敏：后面的报错也可能带出配置值
+    register_config_secrets(cfg)
+
+    # 配置层校验先于凭据加载：配置写错时不该先去读 cookies 文件
+    if args.loop and not cfg.snipe_coupons:
+        ap.error("抢券目标为空（关键词 %r 未匹配到任何固定券），"
+                 "loop 会空转到超时——请检查 snipe_keyword / fixed_coupons"
+                 % cfg.snipe_keyword)
+
+    # 通知自检不需要凭据文件，先于账号加载
+    if args.notify_test:
+        return _notify_test(cfg, ap)
+
+    auths = _load_auths(cfg)
+    if args.accounts:
+        auths = _filter_accounts(auths, args.accounts, ap)
+
+    # 通知是旁路：未配置通道时 enabled=False，全流程零副作用
+    notifier = Notifier.from_config(cfg)
+    try:
+        if args.ping:
+            report = ping(auths, config=cfg, log_path=cfg.keepalive_log,
+                          notifier=notifier)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 1 if any(v == "expired" or v.startswith("error")
+                            for v in report.values()) else 0
+
+        if args.verify_session:
+            report = verify_session(auths, config=cfg,
+                                    log_path=cfg.keepalive_log,
+                                    notifier=notifier)
+            # 成功账号回显凭据文件路径：确认「重新登录后导出的文件已可用」
+            for auth in auths:
+                if report.get(auth["label"], "").startswith("authenticated"):
+                    print("认证文件已可用: %s" % auth.get("_auth_file"),
+                          file=sys.stderr)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 1 if any(not v.startswith("authenticated")
+                            for v in report.values()) else 0
+
+        if args.loop:
+            report = loop_run(auths, config=cfg, minutes=cfg.loop_minutes,
+                              interval=cfg.loop_interval, fire_at=cfg.fire_at,
+                              run_log=_run_log_name(cfg, "claim"),
+                              notifier=notifier)
+            any_error = _loop_has_error(report)
+        else:
+            report, any_error = single_run(
+                auths, config=cfg, run_log=_run_log_name(cfg, "claim-single"),
+                notifier=notifier)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 1 if any_error else 0
+    finally:
+        notifier.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

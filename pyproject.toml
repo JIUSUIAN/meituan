@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chagee-claim"
+description = "网易大神 partner-perks 霸王茶姬优惠券自动领取（多账号并发、请求签名直调）"
+readme = "README.md"
+requires-python = ">=3.9"
+dynamic = ["version"]
+dependencies = [
+    "requests>=2.28",
+    'tzdata; sys_platform == "win32"',
+]
+
+[project.scripts]
+chagee = "chagee.cli:main"
+
+[tool.setuptools]
+packages = ["chagee"]
+
+[tool.setuptools.dynamic]
+version = { attr = "chagee.__version__" }
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true

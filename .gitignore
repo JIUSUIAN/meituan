@@ -1,0 +1,7 @@
+claim.config.json
+cookies.json
+cookies*.bak
+*.tmp
+*.jsonl
+*.log
+__pycache__/

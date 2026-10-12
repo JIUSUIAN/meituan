@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # 凭据文件一旦入库即视为泄露（见 .gitignore 与 README 安全约定）
+      - name: 凭据文件绝不入库
+        run: |
+          if git ls-files | grep -E '(^|/)cookies[^/]*\.json'; then
+            echo "::error::检测到凭据文件已入库，视为已泄露：立即重新获取并清理历史"
+            exit 1
+          fi
+
+      - name: 语法编译检查
+        run: python -m compileall -q chagee tests claim.py
+
+      # 测试全部 mock，不访问真实第三方接口
+      - name: 单元测试
+        run: python -m unittest discover -s tests -t . -v

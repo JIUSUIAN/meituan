@@ -1,0 +1,3 @@
+# 依赖单一真源在 pyproject.toml；这里只做可编辑安装入口
+# （pip install -r requirements.txt 等价于 pip install -e .）
+-e .
