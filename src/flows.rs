@@ -888,7 +888,9 @@ impl LoopRunner {
             }
             "rate_limited" => {
                 st.backoff_until[index] = now_mono() + self.cfg.rate_limit_backoff;
-                st.soldout_streak[index].remove(cid);
+                // 注意：限流不重置抢光计数——40007 只说明"慢点"，不说明"券回来了"。
+                // 2026-10-14：Python 版同位置 bug 导致 177 的立减20 在
+                // 60001/40007 交替中跑满 10 分钟，streak 永远到不了 3。
                 st.final_[index].insert(
                     name.clone(),
                     json!({"coupon": name, "status": status, "detail": detail}),
