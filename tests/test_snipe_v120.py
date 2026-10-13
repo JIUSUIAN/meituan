@@ -97,12 +97,12 @@ class PreheatParallelTest(unittest.TestCase):
                         "预热疑似串行：3×0.3s 用了 %.2fs" % elapsed)
         wu.assert_called_once()
         lead = wu.call_args[0][1]
-        self.assertGreaterEqual(lead, 0.2)
+        self.assertGreaterEqual(lead, 0.1)
         self.assertLessEqual(lead, 0.6)
 
 
 # ---------------------------------------------------------------------------
-# #4 自适应 lead：预热 RTT 中位数 * 0.2，钳制 [0.2, 0.6]
+# #4 自适应 lead：预热 RTT 中位数 * 0.2，钳制 [0.1, 0.6]
 # ---------------------------------------------------------------------------
 
 class AdaptiveLeadTest(unittest.TestCase):
@@ -126,7 +126,8 @@ class AdaptiveLeadTest(unittest.TestCase):
         self.assertAlmostEqual(0.6, self._runner()._adaptive_lead({"a": 5.0}))
 
     def test_fast_network_floored(self):
-        self.assertAlmostEqual(0.2, self._runner()._adaptive_lead({"a": 0.5}))
+        # 2026-10-13：下限从 0.2 降到 0.1（177 立减20 提前到达撞旧库存）
+        self.assertAlmostEqual(0.1, self._runner()._adaptive_lead({"a": 0.5}))
 
     def test_disabled_falls_back_to_fire_lead(self):
         r = self._runner(adaptive_lead=False, fire_lead=0.3)
