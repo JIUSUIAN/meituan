@@ -475,7 +475,9 @@ class LoopRunner:
                     (label, name, status, send_ts, elapsed))
             elif status == "rate_limited":
                 self.backoff_until[label] = time.time() + self.cfg.rate_limit_backoff
-                self.soldout_streak[label].pop(cid, None)
+                # 注意：限流不重置抢光计数——40007 只说明"慢点"，不说明"券回来了"。
+                # 2026-10-14 复盘：177 的立减20 在 60001/40007 交替中跑满 10 分钟，
+                # 就是因为这里 pop 掉了 streak，导致"连续 3 次抢光停止"永远触发不了。
                 self.final[label][name] = {"coupon": name, "status": status,
                                            "detail": detail}
                 log("[%s] 命中限流，退避 %ds (发送%s, 耗时%.2fs)" %
