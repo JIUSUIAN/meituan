@@ -603,6 +603,7 @@ impl Notifier {
             "resend_api_key" => g!(resend_api_key),
             "resend_from" => g!(resend_from),
             "resend_from_name" => g!(resend_from_name),
+            "notify_to_mails" => self.cfg.notify_to_mails.join(","),
             _ => String::new(),
         }
     }
@@ -1020,6 +1021,24 @@ mod tests {
         assert!(!n.enabled());
         let r = n.notify("result", "hello", None, false, None, None, None);
         assert!(r.is_empty(), "未配置通道时零副作用");
+    }
+
+    #[test]
+    fn cfg_field_covers_notify_to_mails() {
+        // 回归：2026-10-13 昨晚 Rust 汇总邮件报「缺少配置: notify_to_mails」，
+        // 根因是 cfg_field match 缺了这一 arm，永远返回空字符串。
+        // 全局路径（to_mails=None）走 cfg_field 检查，缺 arm 则必失败。
+        let secrets = SecretsRegistry::new();
+        let cfg = Config {
+            notify_targets: vec!["resend".into()],
+            resend_api_key: "re_synthetic".into(),
+            resend_from: "noreply@example.invalid".into(),
+            notify_to_mails: vec!["me@example.invalid".into()],
+            ..Default::default()
+        };
+        let n = Notifier::new(cfg, Arc::clone(&secrets));
+        assert_eq!(n.cfg_field("notify_to_mails"), "me@example.invalid");
+        assert!(!n.cfg_field("notify_to_mails").is_empty());
     }
 
     #[test]
