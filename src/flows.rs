@@ -1307,7 +1307,9 @@ pub fn loop_run(
 /// 用预热 RTT 自适应开火提前量，让请求落在整点附近。
 ///
 /// 取 RTT 中位数 × 0.2（保守系数，RTT=1.5s 时恰为已验证的 0.3s），
-/// 钳制在 [0.2, 0.6]。关闭开关或无预热数据时回退固定 `fire_lead`。
+/// 钳制在 [0.1, 0.6]。关闭开关或无预热数据时回退固定 `fire_lead`。
+/// 2026-10-13：下限从 0.2 降到 0.1——177 的立减20 因网络波动提前到达，
+/// 撞上旧库存 60001；提前到达比晚到更致命。
 pub fn adaptive_lead(enabled: bool, fire_lead: f64, rtts: &[(usize, f64)]) -> f64 {
     if !enabled || rtts.is_empty() {
         return fire_lead;
@@ -1315,7 +1317,7 @@ pub fn adaptive_lead(enabled: bool, fire_lead: f64, rtts: &[(usize, f64)]) -> f6
     let mut values: Vec<f64> = rtts.iter().map(|(_, r)| *r).collect();
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median = values[values.len() / 2];
-    (0.6f64).min((0.2f64).max(median * 0.2))
+    (0.6f64).min((0.1f64).max(median * 0.2))
 }
 
 #[cfg(test)]
@@ -1344,9 +1346,9 @@ mod tests {
         // 网络很慢：钳在上界 0.6
         let slow = vec![(0usize, 10.0)];
         assert!((adaptive_lead(true, 0.0, &slow) - 0.6).abs() < 1e-9);
-        // 网络很快：钳在下界 0.2，不会提前过头
+        // 网络很快：钳在下界 0.1，不会提前过头
         let fast = vec![(0usize, 0.1)];
-        assert!((adaptive_lead(true, 0.0, &fast) - 0.2).abs() < 1e-9);
+        assert!((adaptive_lead(true, 0.0, &fast) - 0.1).abs() < 1e-9);
     }
 
     #[test]
