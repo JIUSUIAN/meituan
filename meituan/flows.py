@@ -312,6 +312,22 @@ def _single_run_accounts(auths, cfg, log, report):
     return any_error
 
 
+def _lead_cap_for_floor(fire_at, fire_floor):
+    """计算开火下限对应的最大允许 lead：fire_at - lead >= fire_floor。
+
+    例如 fire_at=23:59:59.9、fire_floor=23:59:59.7 时返回 0.2。
+    fire_at 不晚于 fire_floor 时返回 inf（下限不生效）；
+    解析失败时返回 inf，由 wait_until 的常规逻辑处理。"""
+    try:
+        def _secs(s):
+            parts = s.split(":")
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        diff = _secs(fire_at) - _secs(fire_floor)
+        return diff if diff > 0 else float("inf")
+    except Exception:
+        return float("inf")
+
+
 def wait_until(target_str, lead=0.0):
     """等到目标时刻（HH:MM[:SS[.毫秒]]，按 Asia/Shanghai 解析，不受系统时区影响）
     再返回；目标已过则直接返回。最后 5ms 忙等，保证毫秒级精度。
@@ -563,6 +579,11 @@ class LoopRunner:
         with ThreadPoolExecutor(max_workers=len(self.auths)) as pool:
             list(pool.map(_one, self.auths))
         lead = self._adaptive_lead(rtts)
+        # 开火下限（2026-10-14 定版）：实际开火时刻不早于 fire_floor（默认 59.7）。
+        # 若 59.9 - lead < 59.7，则按 59.7 开火——宁可晚到排队，不早到撞旧库存。
+        if self.fire_at and self.cfg.fire_floor:
+            lead = min(lead, _lead_cap_for_floor(self.fire_at,
+                                                self.cfg.fire_floor))
         wait_until(self.fire_at, lead)
         log("开火！(lead=%.2fs)" % lead)
 

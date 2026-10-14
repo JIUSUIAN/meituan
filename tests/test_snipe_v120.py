@@ -129,6 +129,16 @@ class AdaptiveLeadTest(unittest.TestCase):
         # 2026-10-13：下限从 0.2 降到 0.1（177 立减20 提前到达撞旧库存）
         self.assertAlmostEqual(0.1, self._runner()._adaptive_lead({"a": 0.5}))
 
+    def test_lead_cap_for_floor(self):
+        # 2026-10-14：开火下限 59.7，59.9 基准时 lead 上限 0.2
+        self.assertAlmostEqual(
+            0.2, flows._lead_cap_for_floor("23:59:59.9", "23:59:59.7"))
+        # fire_at 不晚于下限：不设限
+        self.assertTrue(
+            flows._lead_cap_for_floor("23:59:59", "23:59:59.7") == float("inf"))
+        self.assertTrue(
+            flows._lead_cap_for_floor("23:59:59.7", "23:59:59.7") == float("inf"))
+
     def test_disabled_falls_back_to_fire_lead(self):
         r = self._runner(adaptive_lead=False, fire_lead=0.3)
         self.assertAlmostEqual(0.3, r._adaptive_lead({"a": 5.0}))
