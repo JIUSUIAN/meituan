@@ -502,6 +502,26 @@ pub fn single_run(
 // 等待与自适应提前量
 // ---------------------------------------------------------------------------
 
+/// 计算开火下限对应的最大允许 lead：fire_at - lead >= fire_floor。
+///
+/// 例如 fire_at=23:59:59.9、fire_floor=23:59:59.7 时返回 0.2。
+/// fire_at 不晚于 fire_floor 时返回 INFINITY（下限不生效）。
+fn lead_cap_for_floor(fire_at: &str, fire_floor: &str) -> f64 {
+    fn secs(s: &str) -> Option<f64> {
+        let p: Vec<&str> = s.split(':').collect();
+        if p.len() < 3 {
+            return None;
+        }
+        Some(p[0].parse::<f64>().ok()? * 3600.0
+            + p[1].parse::<f64>().ok()? * 60.0
+            + p[2].parse::<f64>().ok()?)
+    }
+    match (secs(fire_at), secs(fire_floor)) {
+        (Some(a), Some(b)) if a > b => a - b,
+        _ => f64::INFINITY,
+    }
+}
+
 /// 等到目标时刻（北京时间，格式 `HH:MM[:SS[.毫秒]]`）再返回。
 ///
 /// `lead > 0` 表示提前 `lead` 秒开火。跨零点保护：若目标已过 30 分钟内
@@ -1040,11 +1060,16 @@ impl LoopRunner {
                 });
             }
         });
-        let lead = adaptive_lead(
+        let mut lead = adaptive_lead(
             self.cfg.adaptive_lead,
             self.cfg.fire_lead,
             &rtts.into_inner().unwrap(),
         );
+        // 开火下限（2026-10-14 定版）：实际开火时刻不早于 fire_floor（默认 59.7）。
+        // 宁可晚到排队，不早到撞旧库存。
+        if let (Some(fire_at), Some(floor)) = (&self.fire_at, &self.cfg.fire_floor) {
+            lead = lead.min(lead_cap_for_floor(fire_at, floor));
+        }
         if let Some(fire_at) = &self.fire_at {
             wait_until(fire_at, lead);
         }
@@ -1344,6 +1369,15 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn lead_cap_for_floor_caps_at_point_two() {
+        // 59.9 基准、59.7 下限：lead 上限 0.2
+        assert!((lead_cap_for_floor("23:59:59.9", "23:59:59.7") - 0.2).abs() < 1e-9);
+        // fire_at 不晚于下限：不设限
+        assert!(lead_cap_for_floor("23:59:59", "23:59:59.7").is_infinite());
+        assert!(lead_cap_for_floor("23:59:59.7", "23:59:59.7").is_infinite());
+    }
+
     fn adaptive_lead_is_clamped() {
         // 网络很慢：钳在上界 0.6
         let slow = vec![(0usize, 10.0)];

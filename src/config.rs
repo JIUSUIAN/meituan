@@ -145,6 +145,9 @@ pub struct Config {
     pub fire_at: Option<String>,
     pub fire_lead: f64,
     pub adaptive_lead: bool,
+    /// 开火时刻下限（2026-10-14 用户定版）：fire_at - lead 若早于此时刻，
+    /// 按此时刻开火。宁可晚到排队（安全），不早到撞旧库存（致命）。
+    pub fire_floor: Option<String>,
     pub early_stop_all_soldout: bool,
     pub burst_test: bool,
 }
@@ -161,7 +164,7 @@ impl Default for Config {
             soldout_stop_after: 3,
 
             refresh_every: 30.0,
-            first_wave_gap: 0.05,
+            first_wave_gap: 0.0,
             sustained_gap: 0.5,
             first_wave_inflight: 6,
             sustained_inflight: 2,
@@ -223,6 +226,7 @@ impl Default for Config {
             fire_at: None,
             fire_lead: 0.0,
             adaptive_lead: true,
+            fire_floor: Some(s!("23:59:59.7")),
             early_stop_all_soldout: true,
             burst_test: false,
         }
@@ -324,6 +328,7 @@ struct ConfigFile {
     fire_at: Option<String>,
     fire_lead: Option<f64>,
     adaptive_lead: Option<bool>,
+    fire_floor: Option<String>,
     early_stop_all_soldout: Option<bool>,
     burst_test: Option<bool>,
 }
@@ -402,6 +407,7 @@ impl Config {
         set!(loop_minutes);
         set!(loop_interval);
         opt_set!(fire_at);
+        opt_set!(fire_floor);
         set!(fire_lead);
         set!(adaptive_lead);
         set!(early_stop_all_soldout);
@@ -676,7 +682,7 @@ mod tests {
         assert_eq!(c.brand_keyword, "霸王茶姬");
         assert_eq!(c.snipe_keyword, "5折");
         assert_eq!(c.soldout_stop_after, 3);
-        assert_eq!(c.first_wave_gap as f32, 0.05);
+        assert_eq!(c.first_wave_gap as f32, 0.0);
         assert_eq!(c.first_wave_inflight, 6);
         assert_eq!(c.sustained_inflight, 2);
         assert_eq!(c.rate_limit_backoff as f32, 60.0);
