@@ -123,6 +123,13 @@ class AdaptiveLeadTest(unittest.TestCase):
         self.assertAlmostEqual(0.299, r._adaptive_lead(
             {"a": 2.5, "b": 3.0, "c": 2.8}))
 
+    def test_median_of_two_is_average(self):
+        # 2026-10-15：偶数个时取中间两数的平均，不是偏大的那个
+        # (0.68 + 1.46) / 2 = 1.07 -> lead 0.214
+        r = self._runner()
+        self.assertAlmostEqual(0.214, r._adaptive_lead(
+            {"a": 0.68, "b": 1.46}))
+
     def test_slow_network_capped(self):
         self.assertAlmostEqual(0.299, self._runner()._adaptive_lead({"a": 5.0}))
 

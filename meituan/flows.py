@@ -601,7 +601,11 @@ class LoopRunner:
         """
         if not self.cfg.adaptive_lead or not rtts:
             return self.cfg.fire_lead
-        med = sorted(rtts.values())[len(rtts) // 2]
+        vals = sorted(rtts.values())
+        n = len(vals)
+        # 真中位数：奇数个取中间，偶数个取中间两数的平均
+        # （2026-10-15 修正：之前偶数个时直接取偏大的那个）
+        med = vals[n // 2] if n % 2 == 1 else (vals[n // 2 - 1] + vals[n // 2]) / 2
         return min(0.299, max(0.1, med * 0.2))
 
     def _build_wave_tasks(self):
