@@ -592,7 +592,9 @@ class LoopRunner:
 
         预热 RTT 含建连握手（约 0.6s），开火走复用连接，单程约
         (RTT-0.6)/2。取中位数 * 0.2（保守系数，RTT=1.5s 时恰为已验证
-        的 0.3s），钳制在 [0.1, 0.6]：只在网络明显变慢时多提前，
+        的 0.3s），钳制在 [0.1, 0.299]：开火基准 59.999，lead 上限 0.299
+        时最早开火 59.700（= 旧 fire_floor 下限，2026-10-15 用户定版，
+        把下限内建到 lead 上限里，不再需要单独的 floor 截断）。
         网络快时不提前过头（避免请求在 00:00:00 之前到达——
         2026-10-13 复盘：177 的立减20 因网络波动提前到达，撞上旧库存 60001）。
         关闭开关或无预热数据时回退 fire_lead。
@@ -600,7 +602,7 @@ class LoopRunner:
         if not self.cfg.adaptive_lead or not rtts:
             return self.cfg.fire_lead
         med = sorted(rtts.values())[len(rtts) // 2]
-        return min(0.6, max(0.1, med * 0.2))
+        return min(0.299, max(0.1, med * 0.2))
 
     def _build_wave_tasks(self):
         """本轮任务：两张5折券排前面优先并发发出。"""

@@ -98,11 +98,11 @@ class PreheatParallelTest(unittest.TestCase):
         wu.assert_called_once()
         lead = wu.call_args[0][1]
         self.assertGreaterEqual(lead, 0.1)
-        self.assertLessEqual(lead, 0.6)
+        self.assertLessEqual(lead, 0.299)
 
 
 # ---------------------------------------------------------------------------
-# #4 自适应 lead：预热 RTT 中位数 * 0.2，钳制 [0.1, 0.6]
+# #4 自适应 lead：预热 RTT 中位数 * 0.2，钳制 [0.1, 0.299]（2026-10-15）
 # ---------------------------------------------------------------------------
 
 class AdaptiveLeadTest(unittest.TestCase):
@@ -114,16 +114,17 @@ class AdaptiveLeadTest(unittest.TestCase):
         return r
 
     def test_typical_rtt_anchors_proven_point(self):
-        # RTT 1.5s -> 0.3s，恰为 10-11 实测验证过的固定值
-        self.assertAlmostEqual(0.3, self._runner()._adaptive_lead({"a": 1.5}))
+        # 2026-10-15：上限 0.299，RTT 1.5s -> 0.3 被钳到 0.299
+        self.assertAlmostEqual(0.299, self._runner()._adaptive_lead({"a": 1.5}))
 
     def test_median_of_three(self):
         r = self._runner()
-        self.assertAlmostEqual(0.56, r._adaptive_lead(
+        # 2026-10-15：上限 0.299，中位数 2.8s -> 0.56 被钳到 0.299
+        self.assertAlmostEqual(0.299, r._adaptive_lead(
             {"a": 2.5, "b": 3.0, "c": 2.8}))
 
     def test_slow_network_capped(self):
-        self.assertAlmostEqual(0.6, self._runner()._adaptive_lead({"a": 5.0}))
+        self.assertAlmostEqual(0.299, self._runner()._adaptive_lead({"a": 5.0}))
 
     def test_fast_network_floored(self):
         # 2026-10-13：下限从 0.2 降到 0.1（177 立减20 提前到达撞旧库存）
