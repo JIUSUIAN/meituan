@@ -1334,9 +1334,11 @@ pub fn loop_run(
 /// 用预热 RTT 自适应开火提前量，让请求落在整点附近。
 ///
 /// 取 RTT 中位数 × 0.2（保守系数，RTT=1.5s 时恰为已验证的 0.3s），
-/// 钳制在 [0.1, 0.6]。关闭开关或无预热数据时回退固定 `fire_lead`。
+/// 钳制在 [0.1, 0.299]。关闭开关或无预热数据时回退固定 `fire_lead`。
 /// 2026-10-13：下限从 0.2 降到 0.1——177 的立减20 因网络波动提前到达，
 /// 撞上旧库存 60001；提前到达比晚到更致命。
+/// 2026-10-15：上限从 0.6 降到 0.299——开火基准 59.999，lead 上限 0.299
+/// 时最早开火 59.700（= 旧 fire_floor 下限），把下限内建到 lead 上限里。
 pub fn adaptive_lead(enabled: bool, fire_lead: f64, rtts: &[(usize, f64)]) -> f64 {
     if !enabled || rtts.is_empty() {
         return fire_lead;
@@ -1344,7 +1346,7 @@ pub fn adaptive_lead(enabled: bool, fire_lead: f64, rtts: &[(usize, f64)]) -> f6
     let mut values: Vec<f64> = rtts.iter().map(|(_, r)| *r).collect();
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median = values[values.len() / 2];
-    (0.6f64).min((0.1f64).max(median * 0.2))
+    (0.299f64).min((0.1f64).max(median * 0.2))
 }
 
 #[cfg(test)]
@@ -1365,7 +1367,7 @@ mod tests {
     fn adaptive_lead_uses_median_times_coefficient() {
         let rtts = vec![(0usize, 1.5), (1, 2.0), (2, 1.0)];
         // 中位数 1.5 × 0.2 = 0.3（实测验证过的那个点）
-        assert!((adaptive_lead(true, 0.0, &rtts) - 0.3).abs() < 1e-9);
+        assert!((adaptive_lead(true, 0.0, &rtts) - 0.299).abs() < 1e-9);
     }
 
     #[test]
