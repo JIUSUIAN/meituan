@@ -1345,7 +1345,14 @@ pub fn adaptive_lead(enabled: bool, fire_lead: f64, rtts: &[(usize, f64)]) -> f6
     }
     let mut values: Vec<f64> = rtts.iter().map(|(_, r)| *r).collect();
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median = values[values.len() / 2];
+    // 真中位数：奇数个取中间，偶数个取中间两数的平均
+    // （2026-10-15 修正：之前偶数个时直接取偏大的那个）
+    let n = values.len();
+    let median = if n % 2 == 1 {
+        values[n / 2]
+    } else {
+        (values[n / 2 - 1] + values[n / 2]) / 2.0
+    };
     (0.299f64).min((0.1f64).max(median * 0.2))
 }
 
@@ -1368,6 +1375,13 @@ mod tests {
         let rtts = vec![(0usize, 1.5), (1, 2.0), (2, 1.0)];
         // 中位数 1.5 × 0.2 = 0.3（实测验证过的那个点）
         assert!((adaptive_lead(true, 0.0, &rtts) - 0.299).abs() < 1e-9);
+    }
+
+    #[test]
+    fn adaptive_lead_even_count_uses_average() {
+        // 2026-10-15：偶数个时取中间两数的平均：(0.68+1.46)/2=1.07 → 0.214
+        let rtts = vec![(0usize, 0.68), (1, 1.46)];
+        assert!((adaptive_lead(true, 0.0, &rtts) - 0.214).abs() < 1e-9);
     }
 
     #[test]
