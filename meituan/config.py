@@ -44,7 +44,9 @@ class Config:
     sustained_gap: float = 0.5        # 后续波次间隔（秒）
     # 第一波在飞上限：账号数 × 目标券数（实测 2 账号 4 并发、3 账号 6 并发，
     # 单波都在 0.15s 内打完且不触发 40007；跨波持续高频才会撞限流）
-    first_wave_inflight: int = 6
+    # 第一波最大同时在飞任务数（2026-10-16：4 账号 × 2 券 = 8 任务，
+    # 从 6 提到 8；限流桶按账号独立，每账号第一波仍只发 2 请求）
+    first_wave_inflight: int = 8
     sustained_inflight: int = 2       # 后续波次在飞上限
     rate_limit_backoff: float = 60    # 命中限流后的退避秒数
 

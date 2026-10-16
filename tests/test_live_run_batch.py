@@ -233,15 +233,16 @@ class RotationPersistsPerEntryTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class AdaptiveConcurrencyTest(unittest.TestCase):
-    def test_default_inflight_covers_three_accounts(self):
+    def test_default_inflight_covers_four_accounts(self):
         # 实测：2 账号 4 并发、3 账号 6 并发，单波 0.15s 内打完不触发 40007
-        self.assertEqual(6, Config().first_wave_inflight)
+        # 2026-10-16：4 账号 × 2 券 = 8 任务
+        self.assertEqual(8, Config().first_wave_inflight)
 
     def test_pacing_gate_uses_config_value(self):
         cfg = Config()
         pacing = GrantPacing(cfg.first_wave_gap, cfg.first_wave_inflight,
                              cfg.sustained_gap, cfg.sustained_inflight)
-        self.assertEqual(6, pacing.gate.max_inflight)
+        self.assertEqual(8, pacing.gate.max_inflight)
 
     def _runner(self, n_accounts):
         auths = [account("号%d" % i, "tok-%d" % i, "uid-%d" % i, "dev-%d" % i)
