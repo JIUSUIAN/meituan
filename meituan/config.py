@@ -97,6 +97,10 @@ class Config:
     # 邮件类通道（email / resend）的全局收件人；账号条目里的
     # notify.to / notify_mail 可以覆盖它
     notify_to_mails: tuple = ()
+    # 账号异常类事件（auth_expired 登录态失效 / health 健康检查异常）的
+    # 独立收件人；为空时回退到 notify_to_mails
+    # （2026-10-16 用户定版：异常邮件发 480064929@qq.com，汇总仍走 lastrui@outlook.com）
+    anomaly_to_mails: tuple = ()
     # 邮件：QQ/163 用 smtp 主机 + 授权码 + SSL(465)；Gmail 用 STARTTLS(587)
     email_smtp_host: str = ""         # 可写 'smtp.qq.com:465' 覆盖端口
     email_smtp_port: int = 465

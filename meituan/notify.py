@@ -234,6 +234,11 @@ class Notifier:
         if not force and event not in tuple(self.cfg.notify_events):
             return []
         title = title or EVENT_TITLES.get(event, "美团 通知")
+        # 账号异常类事件优先走独立收件人（2026-10-16）：
+        # 未显式传 to_mails 时，auth_expired / health 走 anomaly_to_mails，
+        # 为空则回退 notify_to_mails（_send 里的原有回退逻辑）
+        if to_mails is None and event in ("auth_expired", "health"):
+            to_mails = tuple(getattr(self.cfg, "anomaly_to_mails", None) or ()) or None
         if targets is not None:
             unknown = [t for t in targets if t not in CHANNELS]
             if unknown:

@@ -958,6 +958,30 @@ class ResendChannelTest(unittest.TestCase):
         self.assertEqual("已带名字 <a@x.com>",
                          self.session.calls[0]["json"]["from"])
 
+    def test_anomaly_events_go_to_anomaly_to_mails(self):
+        # 2026-10-16：auth_expired / health 走 anomaly_to_mails，
+        # result（汇总）仍走 notify_to_mails
+        notifier = self._notifier(
+            notify_events=("result", "auth_expired", "health"),
+            anomaly_to_mails=("480064929@qq.com",))
+        notifier.notify("auth_expired", "x")
+        self.assertEqual(["480064929@qq.com"],
+                         self.session.calls[0]["json"]["to"])
+        notifier.notify("health", "x")
+        self.assertEqual(["480064929@qq.com"],
+                         self.session.calls[1]["json"]["to"])
+        notifier.notify("result", "x")
+        self.assertEqual(["lastrui@outlook.com"],
+                         self.session.calls[2]["json"]["to"])
+
+    def test_anomaly_falls_back_to_notify_to_mails(self):
+        # anomaly_to_mails 为空时回退到 notify_to_mails
+        notifier = self._notifier(
+            notify_events=("result", "auth_expired", "health"))
+        notifier.notify("auth_expired", "x")
+        self.assertEqual(["lastrui@outlook.com"],
+                         self.session.calls[0]["json"]["to"])
+
     def test_account_recipients_override_global(self):
         notifier = self._notifier(notify_events=("account_result",))
         notifier.notify_account("老号", [{"coupon": "券", "status": "granted"}],
