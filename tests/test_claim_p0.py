@@ -241,6 +241,21 @@ class GrantStatusMappingTest(unittest.TestCase):
         self.assertEqual(status, "granted")
         self.assertIn("券", detail)
 
+    def test_grant_empty_result_not_granted(self):
+        """2026-10-20 复盘：午夜高并发下服务端返回 code=200 但 result 为空
+        （无 winPrizeInfo），旧逻辑直接记 granted 造成误报（日志 3 张
+        granted，实际一张没到账）。空响应必须记 failed（以便后续波次重试），
+        绝不能记 granted。"""
+        payloads = ({"code": 200},                          # result 缺失
+                    {"code": 200, "result": {}},            # result 空对象
+                    {"code": 200, "result": {"winPrizeInfo": {}}},   # 券信息空
+                    {"code": 200, "result": {"winPrizeInfo": None}})
+        for payload in payloads:
+            client = make_client([make_response(200, payload)])
+            status, detail, _ = flows.try_grant(client, "b", COUPON)
+            self.assertEqual("failed", status, payload)
+            self.assertIn("空响应", detail)
+
 
 class GrantStatusQueryTest(unittest.TestCase):
     """T03：grant_status 不再静默吞异常，失败与空结果可区分。"""
@@ -366,6 +381,45 @@ class VerifySessionPathTest(unittest.TestCase):
                         Coupon.from_api(cfg.probe_coupon))
         self.assertEqual(client.session.calls[0]["url"],
                          cfg.base_url + cfg.grant_path)
+
+
+class FinalizeReconcileTest(unittest.TestCase):
+    """2026-10-20 复盘：收尾二次确认必须能纠正本地 granted。
+
+    本地 granted 但服务端 grant-status 不是 GRANTED 时，改记 failed 并保留
+    完整证据，避免报告/邮件谎报成功；服务端确认为 GRANTED 时保持 granted。"""
+
+    def _runner_with_final(self, server_status):
+        a = fresh_auth()
+        runner = flows.LoopRunner([a], config=Config(),
+                                  minutes=0.01, interval=0.01)
+        self.addCleanup(lambda: [c.close() for c in runner.clients.values()])
+        self.addCleanup(runner.logger.close)
+        coupon = Coupon.from_api({"couponId": "cid-x",
+                                  "couponName": "【5折外卖券】立减20",
+                                  "couponType": "PHONE_REWARD"})
+        runner.targets[a["label"]] = [("brand-1", coupon)]
+        runner.final[a["label"]]["【5折外卖券】立减20"] = {
+            "coupon": "【5折外卖券】立减20",
+            "status": "granted", "detail": "prize"}
+        runner.clients[a["label"]].grant_status = (
+            lambda ids, timeout=None: {"cid-x": server_status})
+        return runner
+
+    def test_finalize_downgrades_contradicted_granted(self):
+        runner = self._runner_with_final("AVAILABLE")
+        report = runner._finalize()
+        item = report["test-account"][0]
+        self.assertEqual("failed", item["status"])
+        self.assertEqual("AVAILABLE", item["grant_status"])
+        self.assertIn("二次确认", item["detail"])
+
+    def test_finalize_keeps_agreed_granted(self):
+        runner = self._runner_with_final("GRANTED")
+        report = runner._finalize()
+        item = report["test-account"][0]
+        self.assertEqual("granted", item["status"])
+        self.assertEqual("GRANTED", item["grant_status"])
 
 
 class DocConsistencyTest(unittest.TestCase):

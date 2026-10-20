@@ -197,7 +197,15 @@ def try_grant(client, brand_id, coupon, pacing=None, config=None):
         else:
             send_ts = beijing_ts()
             grant_result = client.grant(brand_id, coupon)
-        prize = (grant_result or {}).get("winPrizeInfo") or grant_result
+        prize = (grant_result or {}).get("winPrizeInfo")
+        if not prize:
+            # 2026-10-20 复盘：午夜高并发下服务端返回过 code=200 的空 result
+            # （无 winPrizeInfo），旧逻辑（空也记 granted）造成误报——日志 3 张
+            # granted，实际一张没到账。空响应不是成功：记 failed，走 _grant_one
+            # 的兜底分支继续重试（不计入抢光 streak），报告/邮件不再谎报成功。
+            return ("failed",
+                    "空响应：服务端返回成功但未带券信息（疑似高并发异常），"
+                    "将继续重试", send_ts)
         return ("granted", client.secrets.redact(str(prize))[:200], send_ts)
     except ApiError as e:
         return (classify_grant_error(e),
@@ -591,9 +599,9 @@ class LoopRunner:
         """用预热 RTT 自适应开火提前量，让请求落在 00:00:00 附近。
 
         预热 RTT 含建连握手（约 0.6s），开火走复用连接，单程约
-        (RTT-0.6)/2。取中位数 * 0.2（保守系数），钳制在 [0.001, 0.2]：
+        (RTT-0.6)/2。取中位数 * 0.2（保守系数），钳制在 [0.01, 0.2]：
         开火基准 59.999，开火窗口 [59.799, 59.998]（2026-10-16 用户定版，
-        下限从 0.1 降到 0.001——网络快时开火更贴近 0 点）。
+        下限从 0.1 降到 0.01——网络快时开火更贴近 0 点）。
         网络快时不提前过头（避免请求在 00:00:00 之前到达——
         2026-10-13 复盘：177 的立减20 因网络波动提前到达，撞上旧库存 60001）。
         关闭开关或无预热数据时回退 fire_lead。
@@ -605,7 +613,7 @@ class LoopRunner:
         # 真中位数：奇数个取中间，偶数个取中间两数的平均
         # （2026-10-15 修正：之前偶数个时直接取偏大的那个）
         med = vals[n // 2] if n % 2 == 1 else (vals[n // 2 - 1] + vals[n // 2]) / 2
-        return min(0.2, max(0.001, med * 0.2))
+        return min(0.2, max(0.01, med * 0.2))
 
     def _build_wave_tasks(self):
         """本轮任务：两张5折券排前面优先并发发出。"""
@@ -698,7 +706,12 @@ class LoopRunner:
                 "再用 --verify-session 确认。" % "、".join(expired))
 
     def _finalize(self):
-        """收尾：用 grant-status 补一次状态校验（直接用目标券，不再拉列表）。"""
+        """收尾：用 grant-status 补一次状态校验（直接用目标券，不再拉列表）。
+
+        2026-10-20 复盘：午夜曾出现本地记 granted、实际未到账。服务端
+        grant-status 是权威账本——本地 granted 但服务端不是 GRANTED 时，
+        改记 failed 并保留完整证据（本地曾收到券信息、服务端状态是什么），
+        避免报告/邮件谎报成功。"""
         log = self.logger.log
         report = {}
         for auth in self.auths:
@@ -713,6 +726,14 @@ class LoopRunner:
                     if name not in self.final[label]:
                         self.final[label][name] = {"coupon": name}
                     self.final[label][name]["grant_status"] = st
+                    item = self.final[label][name]
+                    if item.get("status") == "granted" and st != "GRANTED":
+                        item["status"] = "failed"
+                        item["detail"] = (
+                            "服务端二次确认未领到（grant_status=%s）；"
+                            "本地曾收到券信息，已按未成功处理，请核对 App" % st)
+                        log("[%s] %s 二次确认不一致：本地 granted，"
+                            "服务端 %s，已改记 failed" % (label, name, st))
             except Exception as e:
                 log("[%s] 收尾校验失败: %s" % (label, str(e)[:200]))
             report[label] = list(self.final[label].values())

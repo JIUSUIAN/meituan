@@ -133,19 +133,21 @@ class AdaptiveLeadTest(unittest.TestCase):
         # （若按旧逻辑取偏大的 1.0，会得到 0.2）
         self.assertAlmostEqual(0.16, r._adaptive_lead(
             {"a": 0.6, "b": 1.0}))
-        # 极快网络：(0.002 + 0.004) / 2 = 0.003 -> 0.0006 -> 下限 0.001
-        self.assertAlmostEqual(0.001, r._adaptive_lead(
+        # 极快网络：(0.002 + 0.004) / 2 = 0.003 -> 0.0006 -> 下限 0.01
+        # （2026-10-20 用户定版：下限从 0.001 提到 0.01）
+        self.assertAlmostEqual(0.01, r._adaptive_lead(
             {"a": 0.002, "b": 0.004}))
 
     def test_slow_network_capped(self):
         self.assertAlmostEqual(0.2, self._runner()._adaptive_lead({"a": 5.0}))
 
     def test_fast_network_floored(self):
-        # 2026-10-13：下限从 0.2 降到 0.1；2026-10-16：再降到 0.001
+        # 2026-10-13：下限从 0.2 降到 0.1；2026-10-16：再降到 0.001；
+        # 2026-10-20 用户定版：提到 0.01
         # RTT 0.5 -> 0.1，不触发下限
         self.assertAlmostEqual(0.1, self._runner()._adaptive_lead({"a": 0.5}))
-        # RTT 0.004 -> 0.0008，钳到下限 0.001
-        self.assertAlmostEqual(0.001, self._runner()._adaptive_lead({"a": 0.004}))
+        # RTT 0.004 -> 0.0008，钳到下限 0.01
+        self.assertAlmostEqual(0.01, self._runner()._adaptive_lead({"a": 0.004}))
 
     def test_lead_cap_for_floor(self):
         # 2026-10-14：开火下限 59.7，59.9 基准时 lead 上限 0.2
